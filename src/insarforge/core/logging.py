@@ -3,7 +3,6 @@
 import logging
 from typing import TextIO
 
-
 DEFAULT_LOG_FORMAT = "%(levelname)s | %(name)s | %(message)s"
 
 _LOGGER_NAME = "insarforge"
