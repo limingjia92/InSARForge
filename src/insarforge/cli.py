@@ -1,14 +1,30 @@
-"""Command-line interface for InSARForge Phase 2."""
+"""Lightweight command registration for InSARForge."""
 
 import argparse
 import platform
-import sys
 
 from ._version import __version__
 
 
+class SafeArgumentParser(argparse.ArgumentParser):
+    """Argparse syntax diagnostics must not echo arbitrary tokens or values."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs["allow_abbrev"] = False
+        super().__init__(*args, **kwargs)
+
+    def error(self, message):
+        self.print_usage(__import__("sys").stderr)
+        detail = (
+            "required: path"
+            if message == "the following arguments are required: path"
+            else "invalid command-line arguments"
+        )
+        self.exit(2, f"{self.prog}: error: {detail}\n")
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = SafeArgumentParser(
         prog="insarforge",
         description="InSARForge command-line interface.",
     )
@@ -34,12 +50,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     config_subparsers = config_parser.add_subparsers(dest="config_command")
     validate_parser = config_subparsers.add_parser(
-        "validate",
-        help="Validate a configuration path (Phase 2 placeholder).",
-        description="Validate a configuration path (Phase 2 placeholder).",
+        "validate", help="Validate configuration."
     )
     validate_parser.add_argument("path", help="Configuration file path.")
+    validate_parser.add_argument(
+        "--set", dest="set_values", action="append", default=[]
+    )
     validate_parser.set_defaults(handler=_validate_config)
+    resolve_parser = config_subparsers.add_parser(
+        "resolve", help="Resolve configuration defaults."
+    )
+    resolve_parser.add_argument("path", help="Configuration file path.")
+    resolve_parser.add_argument("--set", dest="set_values", action="append", default=[])
+    resolve_parser.add_argument("--explain", action="store_true")
+    resolve_parser.add_argument("--write-dir")
+    resolve_parser.set_defaults(handler=_resolve_config)
     config_parser.set_defaults(config_parser=config_parser)
 
     return parser
@@ -55,8 +80,15 @@ def _doctor(_args: argparse.Namespace) -> int:
 
 
 def _validate_config(_args: argparse.Namespace) -> int:
-    print("Configuration validation is not implemented in Phase 2.", file=sys.stderr)
-    return 1
+    from .config.cli import run_validate
+
+    return run_validate(_args.path, _args.set_values)
+
+
+def _resolve_config(args: argparse.Namespace) -> int:
+    from .config.cli import run_resolve
+
+    return run_resolve(args.path, args.set_values, args.explain, args.write_dir)
 
 
 def main(argv: list[str] | None = None) -> int:

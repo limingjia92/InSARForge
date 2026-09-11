@@ -55,11 +55,11 @@ def test_config_without_nested_command_prints_help(capsys):
     assert "usage: insarforge config" in capsys.readouterr().out
 
 
-def test_config_validate_is_phase_2_placeholder(tmp_path, capsys):
+def test_config_validate_missing_file_is_configuration_error(tmp_path, capsys):
     assert main(["config", "validate", str(tmp_path / "example.yaml")]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == "Configuration validation is not implemented in Phase 2.\n"
+    assert captured.err.startswith("CONFIG_INPUT:")
 
 
 def test_config_validate_missing_path_is_argparse_error(capsys):
