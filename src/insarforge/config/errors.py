@@ -17,6 +17,7 @@ MESSAGES = {
     "CONFIG_PATH": "Invalid POSIX path or configuration path collision.",
     "CONFIG_SECRET": "Recognizable credential material is forbidden.",
     "CONFIG_WRITE": "Unable to save; a new incomplete output directory may remain.",
+    "LEGACY_TRANSLATION": "Legacy command cannot be migrated safely.",
 }
 
 

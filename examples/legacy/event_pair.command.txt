@@ -1,0 +1,6 @@
+autoInSAR.py \
+    --mode pair \
+    --lon 87.378 --lat 28.604 \
+    --event_date 20250107 \
+    --platform S1A \
+    --rel_orbit 121

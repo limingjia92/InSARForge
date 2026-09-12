@@ -1,0 +1,54 @@
+schema_version: 1
+project:
+  name: stack-example
+  work_dir: ./work/stack
+workflow:
+  type: stack
+  stage: all
+  stack:
+    start_date: '2023-01-01'
+    end_date: '2023-03-01'
+mission:
+  name: sentinel1
+  platform: Sentinel-1A
+  relative_orbit: 14
+data:
+  provider: asf
+  search:
+    longitude: 40.7
+    latitude: 13.6
+    half_width_deg: 0.2
+  catalog:
+    timeout_seconds: 60
+    request_size: 1000
+  download:
+    zip_check_backend: auto
+  paths:
+    slc_dir: null # inherit <work_dir>/SLC
+    orbit_dir: null # inherit <work_dir>/orbits
+    dem_dir: null # inherit <work_dir>/DEM
+    aux_dir: null # inherit <work_dir>/AUX
+processing:
+  backend: isce2
+  roi:
+    half_width_deg: 0.2
+  isce2:
+    stack:
+      use_gpu: true # configuration-only GPU request; execution decides availability
+qc: {}
+resources:
+  num_proc: 0
+outputs:
+  paths:
+    process_dir: null # inherit <work_dir>/process
+    results_dir: null # inherit <work_dir>/results
+  figures:
+    enabled: true
+    dpi: 300
+  stack_advice:
+    enabled: true
+    temporal_neighbors: 2
+    quicklook_range_looks: 20 # quicklook looks, separate from scientific looks
+    quicklook_azimuth_looks: 5 # quicklook looks, separate from scientific looks
+corrections: []
+analyzers: []

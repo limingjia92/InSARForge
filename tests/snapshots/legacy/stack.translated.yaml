@@ -1,0 +1,20 @@
+schema_version: 1
+project:
+  work_dir: /__insarforge_fixture__/job
+workflow:
+  type: stack
+  stack:
+    start_date: '2023-01-01'
+    end_date: '2023-03-01'
+mission:
+  name: sentinel1
+  platform: Sentinel-1A
+  relative_orbit: 14
+data:
+  search:
+    longitude: 40.7
+    latitude: 13.6
+processing:
+  backend: isce2
+resources:
+  num_proc: 0

@@ -1,0 +1,12 @@
+schema_version: 1
+project:
+  work_dir: ./work/event-pair
+workflow:
+  type: pair
+  pair:
+    selection: event
+    event_date: '2025-01-07'
+data:
+  search:
+    longitude: 87.378
+    latitude: 28.604

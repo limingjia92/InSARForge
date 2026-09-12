@@ -1,0 +1,63 @@
+schema_version: 1
+project:
+  name: event-pair-example
+  work_dir: ./work/event-pair
+workflow:
+  type: pair
+  stage: all
+  pair:
+    selection: event
+    event_date: '2025-01-07'
+    half_window_days: 12
+mission:
+  name: sentinel1
+  platform: Sentinel-1A
+  relative_orbit: 121
+data:
+  provider: asf
+  search:
+    longitude: 87.378
+    latitude: 28.604
+    half_width_deg: 0.2
+  catalog:
+    timeout_seconds: 60
+    request_size: 1000
+  download:
+    zip_check_backend: auto
+  paths:
+    slc_dir: null # inherit <work_dir>/SLC
+    orbit_dir: null # inherit <work_dir>/orbits
+    dem_dir: null # inherit <work_dir>/DEM
+    aux_dir: null # inherit <work_dir>/AUX
+processing:
+  backend: isce2
+  roi:
+    half_width_deg: 0.2
+  isce2:
+    pair:
+      swaths: [1, 2, 3]
+      range_looks: 20 # scientific looks
+      azimuth_looks: 5 # scientific looks
+      filter_strength: 0.4
+      unwrap: true
+      unwrapper: snaphu_mcf
+      dense_offsets: true
+      esd: true
+      use_gpu: true # configuration-only GPU request; execution decides availability
+qc:
+  pair_export:
+    min_coherence: 0.3
+resources:
+  num_proc: 0
+outputs:
+  paths:
+    process_dir: null # inherit <work_dir>/process
+    results_dir: null # inherit <work_dir>/results
+  pair:
+    phase_products: true
+    offset_products: true
+  figures:
+    enabled: true
+    dpi: 300
+corrections: []
+analyzers: []

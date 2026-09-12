@@ -65,6 +65,13 @@ def _build_parser() -> argparse.ArgumentParser:
     resolve_parser.add_argument("--explain", action="store_true")
     resolve_parser.add_argument("--write-dir")
     resolve_parser.set_defaults(handler=_resolve_config)
+    translate_parser = config_subparsers.add_parser(
+        "translate-legacy", help="Migrate legacy autoInSAR command."
+    )
+    translate_parser.add_argument("command_file")
+    translate_parser.add_argument("--legacy-cwd", required=True)
+    translate_parser.add_argument("--write-dir")
+    translate_parser.set_defaults(handler=_translate_legacy)
     config_parser.set_defaults(config_parser=config_parser)
 
     return parser
@@ -89,6 +96,32 @@ def _resolve_config(args: argparse.Namespace) -> int:
     from .config.cli import run_resolve
 
     return run_resolve(args.path, args.set_values, args.explain, args.write_dir)
+
+
+def _translate_legacy(args: argparse.Namespace) -> int:
+    from .config.legacy import migrate_file
+
+    try:
+        text, record = migrate_file(args.command_file, args.legacy_cwd, args.write_dir)
+    except Exception as exc:
+        from .config.errors import ConfigurationError
+
+        if isinstance(exc, ConfigurationError):
+            print(str(exc), file=__import__("sys").stderr)
+            return 1
+        print("LEGACY_TRANSLATION: migration failed.", file=__import__("sys").stderr)
+        return 1
+    print(text, end="")
+    print(
+        "TRANSLATED: configuration only; data/backend checks deferred.",
+        file=__import__("sys").stderr,
+    )
+    for notice in record.get("notices", []):
+        code = notice.get("code", notice) if isinstance(notice, dict) else notice
+        print(code, file=__import__("sys").stderr)
+    if args.write_dir is not None:
+        print("Translated configuration files saved.", file=__import__("sys").stderr)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

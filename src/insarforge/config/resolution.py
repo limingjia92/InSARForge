@@ -184,8 +184,13 @@ def complete(schema, request, provider, sources, overridden, prefix=""):
 
 def resolve(path, overrides=()):
     original_path = source_path(path)
-    base = original_path.rsplit("/", 1)[0] or "/"
     raw, sha = load_file(original_path)
+    return _resolve_mapping(raw, original_path, sha, overrides)
+
+
+def _resolve_mapping(raw, original_path, sha, overrides=()):
+    """Shared in-memory pipeline; source identity is supplied by the reader."""
+    base = original_path.rsplit("/", 1)[0] or "/"
     scan_secrets(raw)
     schema = select_schema(raw)
     canonical = validate_sparse(schema, raw)

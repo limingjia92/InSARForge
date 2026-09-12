@@ -1,0 +1,6 @@
+autoInSAR.py \
+    --mode pair \
+    --lon 87.378 --lat 28.604 \
+    --reference_date 20250101 \
+    --secondary_date 20250113 \
+    --rel_orbit 121

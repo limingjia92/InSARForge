@@ -1,0 +1,13 @@
+schema_version: 1
+project:
+  work_dir: ./work/manual-pair
+workflow:
+  type: pair
+  pair:
+    selection: manual
+    reference_date: '2025-01-01'
+    secondary_date: '2025-01-13'
+data:
+  search:
+    longitude: 87.378
+    latitude: 28.604

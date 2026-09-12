@@ -3,11 +3,10 @@
 **InSARForge** is a research-oriented framework for building reproducible
 multi-mission and multi-backend InSAR processing workflows.
 
-> **Status: Pre-alpha**
+> **Status: Configuration-only development**
 >
-> InSARForge is currently under architectural design and early development.
-> The processing interfaces and configuration schema are not yet stable and
-> should not be used for production scientific processing.
+> The schema, configuration validation/resolution, and legacy command translation
+> are implemented. SAR processing execution is not implemented.
 
 ## Motivation
 
@@ -65,10 +64,9 @@ products and invoking or assisting downstream StaMPS-HPC workflows.
 
 Current development phase:
 
-**Phase 0 — Project initialization, repository governance, and legacy baseline
-preservation.**
+Current work focuses on stable schema and configuration behavior.
 
-Major functionality has not yet been implemented.
+Development install: `pip install -e '.[dev]'`. See `docs/configuration.md` and `docs/legacy_cli_migration.md`.
 
 ## License
 
@@ -79,3 +77,5 @@ Third-party software and processing backends retain their respective licenses.
 ## Author
 
 Mingjia Li
+## Configuration
+See [docs/configuration.md](docs/configuration.md) and [docs/legacy_cli_migration.md](docs/legacy_cli_migration.md).

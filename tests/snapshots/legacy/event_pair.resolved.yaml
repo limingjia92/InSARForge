@@ -1,0 +1,66 @@
+schema_version: 1
+project:
+  name: null
+  work_dir: /__insarforge_fixture__/job
+workflow:
+  type: pair
+  stage: all
+  pair:
+    selection: event
+    event_date: '2025-01-07'
+    half_window_days: 12
+mission:
+  name: sentinel1
+  platform: Sentinel-1A
+  relative_orbit: 121
+data:
+  provider: asf
+  search:
+    longitude: 87.378
+    latitude: 28.604
+    half_width_deg: 0.2
+  catalog:
+    timeout_seconds: 60
+    request_size: 1000
+  download:
+    zip_check_backend: auto
+  paths:
+    slc_dir: /__insarforge_fixture__/job/SLC
+    orbit_dir: /__insarforge_fixture__/job/orbits
+    dem_dir: /__insarforge_fixture__/job/DEM
+    aux_dir: /__insarforge_fixture__/job/AUX
+processing:
+  backend: isce2
+  roi:
+    half_width_deg: 0.2
+  isce2:
+    pair:
+      swaths:
+        - 1
+        - 2
+        - 3
+      range_looks: 20
+      azimuth_looks: 5
+      filter_strength: 0.4
+      unwrap: true
+      unwrapper: snaphu_mcf
+      dense_offsets: true
+      esd: true
+      use_gpu: true
+corrections: []
+analyzers: []
+qc:
+  pair_export:
+    min_coherence: 0.3
+resources:
+  num_proc: 0
+outputs:
+  paths:
+    process_dir: /__insarforge_fixture__/job/process
+    results_dir: /__insarforge_fixture__/job/results
+  pair:
+    phase_products: true
+    offset_products: true
+  figures:
+    enabled: true
+    dpi: 300

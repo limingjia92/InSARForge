@@ -1,0 +1,54 @@
+schema_version: 1
+project:
+  name: null
+  work_dir: /__insarforge_fixture__/job
+workflow:
+  type: stack
+  stage: all
+  stack:
+    start_date: '2023-01-01'
+    end_date: '2023-03-01'
+mission:
+  name: sentinel1
+  platform: Sentinel-1A
+  relative_orbit: 14
+data:
+  provider: asf
+  search:
+    longitude: 40.7
+    latitude: 13.6
+    half_width_deg: 0.2
+  catalog:
+    timeout_seconds: 60
+    request_size: 1000
+  download:
+    zip_check_backend: auto
+  paths:
+    slc_dir: /__insarforge_fixture__/job/SLC
+    orbit_dir: /__insarforge_fixture__/job/orbits
+    dem_dir: /__insarforge_fixture__/job/DEM
+    aux_dir: /__insarforge_fixture__/job/AUX
+processing:
+  backend: isce2
+  roi:
+    half_width_deg: 0.2
+  isce2:
+    stack:
+      use_gpu: true
+corrections: []
+analyzers: []
+qc: {}
+resources:
+  num_proc: 0
+outputs:
+  paths:
+    process_dir: /__insarforge_fixture__/job/process
+    results_dir: /__insarforge_fixture__/job/results
+  figures:
+    enabled: true
+    dpi: 300
+  stack_advice:
+    enabled: true
+    temporal_neighbors: 2
+    quicklook_range_looks: 20
+    quicklook_azimuth_looks: 5

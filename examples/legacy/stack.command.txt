@@ -1,0 +1,8 @@
+autoInSAR.py \
+    --mode stack \
+    --lon 40.7 --lat 13.6 \
+    --start_date 20230101 \
+    --end_date 20230301 \
+    --rel_orbit 14 \
+    --platform S1A \
+    --num_proc 0
