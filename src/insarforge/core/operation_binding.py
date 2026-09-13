@@ -11,7 +11,9 @@ class OperationCapabilityUnsatisfiedError(OperationBindingError):
     pass
 
 
-def resolve_operation_binding(binding: OperationBinding, registry: PluginRegistry) -> PluginDescriptor:
+def resolve_operation_binding(
+    binding: OperationBinding, registry: PluginRegistry
+) -> PluginDescriptor:
     if not isinstance(binding, OperationBinding):
         raise TypeError("binding")
     if not isinstance(registry, PluginRegistry):
