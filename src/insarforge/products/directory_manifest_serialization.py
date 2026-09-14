@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+
 from .assets import AssetIntegrity, AssetKind
 from .directory_manifest import DirectoryMember, DirectoryMemberManifest
 from .serialization import canonical_json_bytes, strict_json_loads

@@ -1,6 +1,6 @@
 import re
-from dataclasses import dataclass
 import unicodedata
+from dataclasses import dataclass
 
 from .assets import AssetIntegrity, AssetKind
 
@@ -19,7 +19,7 @@ class DirectoryMember:
             or self.path != self.path.strip()
             or self.path.startswith("/")
             or "\\" in self.path
-            or any(c in self.path for c in "\x00\r\n\t")
+            or any(unicodedata.category(c) == "Cc" for c in self.path)
             or "~" in self.path
             or re.search(r"\$\{?[^/]+\}?", self.path)
         ):
