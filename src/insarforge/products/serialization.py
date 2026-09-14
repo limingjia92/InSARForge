@@ -16,6 +16,7 @@ from insarforge.products.assets import (
 from insarforge.products.geometry import AxisDescriptor, GeometryDescriptor
 from insarforge.products.layers import DataLayer, LayerSelector
 from insarforge.products.models import Product
+from insarforge.products.nodata import NoDataKind, NoDataSpec
 from insarforge.products.semantics import (
     PhysicalQuantity,
     SemanticStatus,
@@ -104,7 +105,7 @@ def _e(x):
         }
     if isinstance(x, PluginRef):
         return {
-            "asset_kind": x.asset_kind.value,
+            "kind": x.kind.value,
             "plugin_id": x.plugin_id,
             "api_version": x.api_version,
         }
@@ -143,6 +144,8 @@ def _e(x):
             "value": x.value,
             "anchor": str(x.anchor) if x.anchor else None,
         }
+    if isinstance(x, AssetIntegrity):
+        return {"algorithm": x.algorithm, "digest": x.digest}
     if isinstance(x, NativeAsset):
         return {
             "asset_id": x.asset_id,
@@ -170,20 +173,28 @@ def _e(x):
             "axes": [_e(y) for y in x.axes],
             "registration": _e(x.registration),
             "coordinate_reference": _e(x.coordinate_reference),
-            "member_manifest_ref": _e(x.member_manifest_ref),
+            "extensions": _plain(x.extensions),
+        }
+    if isinstance(x, NoDataSpec):
+        return {
+            "kind": x.kind.value,
+            "value": x.value,
+            "mask_layer_ref": x.mask_layer_ref,
         }
     if isinstance(x, LayerSelector):
-        return {"selector_kind": x.selector_kind, "parameters": _plain(x.parameters)}
+        return {"format_id": x.format_id, "selector_string": x.selector_string}
     if isinstance(x, DataLayer):
         return {
             "layer_id": x.layer_id,
+            "role": x.role,
             "asset_id": x.asset_id,
             "selector": _e(x.selector),
-            "quantity_kind": _e(x.quantity_kind),
+            "quantity": _e(x.quantity),
             "unit": _e(x.unit),
             "sign": _e(x.sign),
             "geometry_ref": _e(x.geometry_ref),
-            "member_manifest_ref": _e(x.member_manifest_ref),
+            "nodata": _e(x.nodata),
+            "dimensions": list(x.dimensions),
         }
     if isinstance(x, Product):
         return {
@@ -293,17 +304,19 @@ def _d(v, typ):
             "coordinate_reference",
             "extensions",
         },
-        LayerSelector: {"selector_kind", "parameters"},
+        NoDataSpec: {"kind", "value", "mask_layer_ref"},
+        LayerSelector: {"format_id", "selector_string"},
         DataLayer: {
             "layer_id",
             "role",
             "asset_id",
             "selector",
-            "quantity_kind",
+            "quantity",
             "unit",
             "sign",
             "geometry_ref",
-            "extensions",
+            "nodata",
+            "dimensions",
         },
     }
     if typ in fields:
@@ -370,18 +383,21 @@ def _d(v, typ):
             v["extensions"],
         )
     if typ is LayerSelector:
-        return LayerSelector(v["selector_kind"], v["parameters"])
+        return LayerSelector(v["format_id"], v["selector_string"])
+    if typ is NoDataSpec:
+        return NoDataSpec(NoDataKind(v["kind"]), v["value"], v["mask_layer_ref"])
     if typ is DataLayer:
         return DataLayer(
             v["layer_id"],
             v["role"],
             v["asset_id"],
-            _d(v["selector"], LayerSelector),
-            _sv(v["quantity_kind"], str),
+            None if v["selector"] is None else _d(v["selector"], LayerSelector),
+            _sv(v["quantity"], str),
             _sv(v["unit"], UnitSpec),
             _sv(v["sign"], SignSpec),
             _sv(v["geometry_ref"], str),
-            v["extensions"],
+            _sv(v["nodata"], NoDataSpec),
+            tuple(_seq(v["dimensions"], "dimensions")),
         )
 
 

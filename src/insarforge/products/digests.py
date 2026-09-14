@@ -5,6 +5,7 @@ from collections.abc import Mapping
 
 from insarforge.contracts.values import FrozenJSON, freeze_json
 from insarforge.products.models import Product
+from insarforge.products.nodata import NoDataSpec
 from insarforge.products.semantics import (
     PhysicalQuantity,
     SemanticValue,
@@ -51,6 +52,12 @@ def _semantic(value):
 
 
 def _value(value):
+    if isinstance(value, NoDataSpec):
+        return {
+            "kind": value.kind.value,
+            "value": value.value,
+            "mask_layer_ref": value.mask_layer_ref,
+        }
     if isinstance(value, SemanticValue):
         return _semantic(value)
     if isinstance(value, UnitSpec):
@@ -111,8 +118,7 @@ def product_semantic_material(
         assets = [
             {
                 "asset_id": a.asset_id,
-                "role": a.role,
-                "kind": a.asset_kind.value,
+                "asset_kind": a.asset_kind.value,
                 "content_identity": asset_content_identities[a.asset_id],
             }
             for a in product.assets
@@ -145,15 +151,18 @@ def product_semantic_material(
                 "layer_id": layer.layer_id,
                 "role": layer.role,
                 "asset_id": layer.asset_id,
-                "selector": {
-                    "selector_kind": layer.selector.selector_kind,
-                    "parameters": _value(layer.selector.parameters),
+                "selector": None
+                if layer.selector is None
+                else {
+                    "format_id": layer.selector.format_id,
+                    "selector_string": layer.selector.selector_string,
                 },
-                "quantity_kind": _semantic(layer.quantity_kind),
+                "quantity": _semantic(layer.quantity),
                 "unit": _semantic(layer.unit),
                 "sign": _semantic(layer.sign),
                 "geometry_ref": _semantic(layer.geometry_ref),
-                "extensions": _value(layer.extensions),
+                "nodata": _semantic(layer.nodata),
+                "dimensions": list(layer.dimensions),
             }
             for layer in product.layers
         ]

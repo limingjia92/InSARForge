@@ -185,16 +185,16 @@ def _layer_match(layer, r, assets, geoms):
         r.role is not None
         and layer.role != r.role
         or r.selector_kind is not None
-        and layer.selector.selector_kind != r.selector_kind
+        and (layer.selector is None or layer.selector.format_id != r.selector_kind)
     ):
         return False
     if (
         r.require_known_quantity
-        and layer.quantity_kind.status is not SemanticStatus.KNOWN
+        and layer.quantity.status is not SemanticStatus.KNOWN
         or r.quantity_kind is not None
         and (
-            layer.quantity_kind.status is not SemanticStatus.KNOWN
-            or layer.quantity_kind.value != r.quantity_kind
+            layer.quantity.status is not SemanticStatus.KNOWN
+            or layer.quantity.value != r.quantity_kind
         )
     ):
         return False

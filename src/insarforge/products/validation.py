@@ -8,6 +8,7 @@ from insarforge.products.assets import NativeAsset
 from insarforge.products.geometry import AxisDescriptor, GeometryDescriptor
 from insarforge.products.layers import DataLayer
 from insarforge.products.models import Product, ProductDraft
+from insarforge.products.nodata import NoDataKind
 from insarforge.products.semantics import SemanticStatus
 
 
@@ -104,6 +105,7 @@ def validate_product_structure(
         g.geometry_id for g in geometries if isinstance(g, GeometryDescriptor)
     }
     asset_ids = {a.asset_id for a in assets if isinstance(a, NativeAsset)}
+    layer_ids = {layer.layer_id for layer in layers if isinstance(layer, DataLayer)}
     for i, geometry in enumerate(geometries):
         if not isinstance(geometry, GeometryDescriptor):
             continue
@@ -139,6 +141,17 @@ def validate_product_structure(
     for i, layer in enumerate(layers):
         if not isinstance(layer, DataLayer):
             continue
+        if (
+            layer.nodata.status is SemanticStatus.KNOWN
+            and layer.nodata.value.kind is NoDataKind.MASK
+            and layer.nodata.value.mask_layer_ref not in layer_ids
+        ):
+            issues.append(
+                _issue(
+                    "validation:missing-mask-layer-reference",
+                    f"layers[{i}].nodata.mask_layer_ref",
+                )
+            )
         if layer.asset_id not in asset_ids:
             issues.append(
                 _issue("validation:missing-asset-reference", f"layers[{i}].asset_id")

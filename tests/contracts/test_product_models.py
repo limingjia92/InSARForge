@@ -1,4 +1,4 @@
-from dataclasses import fields
+from dataclasses import fields, replace
 from typing import get_type_hints
 
 import pytest
@@ -14,6 +14,7 @@ from insarforge.products.assets import (
 )
 from insarforge.products.layers import DataLayer, LayerSelector
 from insarforge.products.models import Product, ProductDraft
+from insarforge.products.nodata import NoDataKind, NoDataSpec
 from insarforge.products.semantics import (
     SemanticStatus,
     SemanticValue,
@@ -47,12 +48,13 @@ def layer(geometry="geometry:x"):
         "layer:x",
         "role:test",
         "asset:x",
-        LayerSelector("selector:test", {}),
+        LayerSelector("selector:test", "synthetic:subobject"),
         sv("quantity:x"),
         sv(UnitSpec("unit:x", "quantity:x", None)),
         sv(SignSpec("sign:x", "observable:x", "direction:x", None, None, ())),
         sv(geometry) if geometry else unknown(),
-        {},
+        sv(NoDataSpec(NoDataKind.NONE, None, None)),
+        ("axis:x",),
     )
 
 
@@ -165,3 +167,27 @@ def test_forward_references_resolve():
         namespace = vars(plugins) | {"ProductDraft": ProductDraft}
         hints = get_type_hints(getattr(proto, method), namespace)
         assert "ProductDraft" in str(hints.get("return"))
+
+
+def populated_product():
+    """Final DataLayer fixture with one native asset and no geometric dependency."""
+    source = layer(None)
+    return Product(
+        "product:synthetic",
+        1,
+        "product:test",
+        "profile:test",
+        1,
+        PluginRef(PluginKind.PROCESSOR, "plugin:synthetic", 1),
+        "synthetic-v1",
+        None,
+        (),
+        (asset(),),
+        (),
+        (
+            source,
+            replace(source, layer_id="mask:a"),
+            replace(source, layer_id="mask:b"),
+        ),
+        {},
+    )
