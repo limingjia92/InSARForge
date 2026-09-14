@@ -38,7 +38,6 @@ def _ids(values, name):
 @dataclass(frozen=True)
 class AssetRequirement:
     requirement_id: str
-    role: str | None
     allowed_kinds: tuple[AssetKind, ...]
     min_count: int
     max_count: int | None
@@ -46,8 +45,6 @@ class AssetRequirement:
 
     def __post_init__(self):
         validate_identifier(self.requirement_id)
-        if self.role is not None:
-            validate_identifier(self.role)
         kinds = tuple(self.allowed_kinds)
         if any(not isinstance(k, AssetKind) for k in kinds) or len(set(kinds)) != len(
             kinds
@@ -88,7 +85,6 @@ class GeometryRequirement:
 class LayerRequirement:
     requirement_id: str
     role: str | None
-    asset_role: str | None
     selector_kind: str | None
     geometry_domain_id: str | None
     quantity_kind: str | None
@@ -106,7 +102,6 @@ class LayerRequirement:
         validate_identifier(self.requirement_id)
         for v in (
             self.role,
-            self.asset_role,
             self.selector_kind,
             self.geometry_domain_id,
             self.quantity_kind,
@@ -167,9 +162,7 @@ class ProductProfile:
 
 
 def _asset_match(a, r):
-    return (r.role is None or a.role == r.role) and (
-        not r.allowed_kinds or a.kind in r.allowed_kinds
-    )
+    return not r.allowed_kinds or a.asset_kind in r.allowed_kinds
 
 
 def _geom_match(g, r):
@@ -194,9 +187,6 @@ def _layer_match(layer, r, assets, geoms):
         or r.selector_kind is not None
         and layer.selector.selector_kind != r.selector_kind
     ):
-        return False
-    a = next((x for x in assets if x.asset_id == layer.asset_id), None)
-    if r.asset_role is not None and (a is None or a.role != r.asset_role):
         return False
     if (
         r.require_known_quantity

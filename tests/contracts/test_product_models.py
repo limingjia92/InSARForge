@@ -33,14 +33,12 @@ def unknown():
 def asset():
     return NativeAsset(
         "asset:x",
-        "role:test",
         AssetKind.FILE,
         AssetLocation(AssetLocationKind.ABSOLUTE_LOCAL, "/tmp/x", None),
         None,
         None,
         None,
         None,
-        {},
     )
 
 

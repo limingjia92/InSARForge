@@ -6,12 +6,27 @@ from enum import Enum
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from insarforge.contracts.values import FrozenJSON, freeze_json, validate_identifier
+from insarforge.contracts.values import (
+    ArtifactRef,
+    validate_identifier,
+)
 
 
 class AssetKind(Enum):
     FILE = "file"
     DIRECTORY = "directory"
+
+
+@dataclass(frozen=True)
+class AssetIntegrity:
+    algorithm: str
+    digest: str
+
+    def __post_init__(self):
+        validate_identifier(self.algorithm)
+        for n, v in (("algorithm", self.algorithm), ("digest", self.digest)):
+            if not isinstance(v, str) or not v or v != v.strip():
+                raise ValueError(n)
 
 
 class AssetLocationKind(Enum):
@@ -85,19 +100,16 @@ class AssetLocation:
 @dataclass(frozen=True)
 class NativeAsset:
     asset_id: str
-    role: str
-    kind: AssetKind
+    asset_kind: AssetKind
     location: AssetLocation
     media_type: str | None
     size_bytes: int | None
-    checksum_algorithm: str | None
-    checksum: str | None
-    extensions: FrozenJSON
+    integrity: AssetIntegrity | None
+    member_manifest_ref: ArtifactRef | None
 
     def __post_init__(self):
         validate_identifier(self.asset_id)
-        validate_identifier(self.role)
-        if not isinstance(self.kind, AssetKind):
+        if not isinstance(self.asset_kind, AssetKind):
             raise TypeError("kind")
         if not isinstance(self.location, AssetLocation):
             raise TypeError("location")
@@ -113,12 +125,17 @@ class NativeAsset:
             or self.size_bytes < 0
         ):
             raise ValueError("size_bytes")
-        if (self.checksum_algorithm is None) != (self.checksum is None):
-            raise ValueError("checksum pair")
-        for name, value in (
-            ("checksum_algorithm", self.checksum_algorithm),
-            ("checksum", self.checksum),
+        if self.integrity is not None and not isinstance(
+            self.integrity, AssetIntegrity
         ):
-            if value is not None and (not value or value != value.strip()):
-                raise ValueError(name)
-        object.__setattr__(self, "extensions", freeze_json(self.extensions))
+            raise TypeError("integrity")
+        if self.member_manifest_ref is not None and not isinstance(
+            self.member_manifest_ref, ArtifactRef
+        ):
+            raise TypeError("member_manifest_ref")
+        if self.member_manifest_ref is not None and self.asset_kind is AssetKind.FILE:
+            raise ValueError("member_manifest_ref")
+        if self.asset_kind is AssetKind.DIRECTORY and (
+            self.size_bytes is not None or self.integrity is not None
+        ):
+            raise ValueError("directory metadata")

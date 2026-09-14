@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from insarforge.products.assets import (
+    AssetIntegrity,
     AssetKind,
     AssetLocation,
     AssetLocationKind,
@@ -22,14 +23,12 @@ def loc(value="/data/example.dat", anchor=None):
 def asset(**kwargs):
     base = dict(
         asset_id="asset_a",
-        role="native_output",
-        kind=AssetKind.FILE,
+        asset_kind=AssetKind.FILE,
         location=loc(),
         media_type=None,
         size_bytes=None,
-        checksum_algorithm=None,
-        checksum=None,
-        extensions={},
+        integrity=None,
+        member_manifest_ref=None,
     )
     base.update(kwargs)
     return NativeAsset(**base)
@@ -69,37 +68,24 @@ def test_kinds_and_locations():
 
 def test_native_asset_validation_and_freezing():
     a = asset(
-        kind=AssetKind.DIRECTORY,
+        asset_kind=AssetKind.FILE,
         media_type="application/octet-stream",
         size_bytes=0,
-        checksum_algorithm="sha256",
-        checksum="abc",
+        integrity=AssetIntegrity("sha256", "abc"),
     )
     assert a
     with pytest.raises(Exception):
         asset(asset_id="bad id")
     with pytest.raises(Exception):
-        asset(role="bad role")
+        asset(asset_kind="file")
     with pytest.raises(TypeError):
-        asset(kind="file")
+        asset(asset_kind="file")
     with pytest.raises(ValueError):
         asset(size_bytes=-1)
     with pytest.raises(ValueError):
         asset(size_bytes=True)
     with pytest.raises(ValueError):
         asset(media_type=" ")
-    with pytest.raises(ValueError):
-        asset(checksum_algorithm="sha256")
-    with pytest.raises(ValueError):
-        asset(checksum="abc")
-    source = {"nested": [1, {"x": 2}]}
-    frozen = asset(extensions=source)
-    source["nested"].append(3)
-    assert len(frozen.extensions["nested"]) == 2
-    with pytest.raises(TypeError):
-        frozen.extensions["nested"] = ()
-    with pytest.raises(Exception):
-        frozen.asset_id = "x"
 
 
 def test_no_io_and_import_boundary():

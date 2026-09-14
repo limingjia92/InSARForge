@@ -112,9 +112,8 @@ def product_semantic_material(
             {
                 "asset_id": a.asset_id,
                 "role": a.role,
-                "kind": a.kind.value,
+                "kind": a.asset_kind.value,
                 "content_identity": asset_content_identities[a.asset_id],
-                "extensions": _value(a.extensions),
             }
             for a in product.assets
         ]

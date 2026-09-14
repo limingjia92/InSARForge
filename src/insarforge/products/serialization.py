@@ -7,6 +7,7 @@ from pathlib import Path
 from insarforge.contracts.identity import PluginKind, PluginRef
 from insarforge.contracts.values import ArtifactRef, FrozenJSON, freeze_json
 from insarforge.products.assets import (
+    AssetIntegrity,
     AssetKind,
     AssetLocation,
     AssetLocationKind,
@@ -103,7 +104,7 @@ def _e(x):
         }
     if isinstance(x, PluginRef):
         return {
-            "kind": x.kind.value,
+            "asset_kind": x.asset_kind.value,
             "plugin_id": x.plugin_id,
             "api_version": x.api_version,
         }
@@ -145,22 +146,20 @@ def _e(x):
     if isinstance(x, NativeAsset):
         return {
             "asset_id": x.asset_id,
-            "role": x.role,
-            "kind": x.kind.value,
+            "asset_kind": x.asset_kind.value,
             "location": _e(x.location),
             "media_type": x.media_type,
             "size_bytes": x.size_bytes,
-            "checksum_algorithm": x.checksum_algorithm,
-            "checksum": x.checksum,
-            "extensions": _plain(x.extensions),
+            "integrity": _e(x.integrity),
+            "member_manifest_ref": _e(x.member_manifest_ref),
         }
     if isinstance(x, AxisDescriptor):
         return {
             "axis_id": x.axis_id,
-            "role": x.role,
             "size": x.size,
             "unit": _e(x.unit),
             "direction": _e(x.direction),
+            "role": x.role,
             "extensions": _plain(x.extensions),
         }
     if isinstance(x, GeometryDescriptor):
@@ -171,21 +170,20 @@ def _e(x):
             "axes": [_e(y) for y in x.axes],
             "registration": _e(x.registration),
             "coordinate_reference": _e(x.coordinate_reference),
-            "extensions": _plain(x.extensions),
+            "member_manifest_ref": _e(x.member_manifest_ref),
         }
     if isinstance(x, LayerSelector):
         return {"selector_kind": x.selector_kind, "parameters": _plain(x.parameters)}
     if isinstance(x, DataLayer):
         return {
             "layer_id": x.layer_id,
-            "role": x.role,
             "asset_id": x.asset_id,
             "selector": _e(x.selector),
             "quantity_kind": _e(x.quantity_kind),
             "unit": _e(x.unit),
             "sign": _e(x.sign),
             "geometry_ref": _e(x.geometry_ref),
-            "extensions": _plain(x.extensions),
+            "member_manifest_ref": _e(x.member_manifest_ref),
         }
     if isinstance(x, Product):
         return {
@@ -277,15 +275,14 @@ def _d(v, typ):
         AssetLocation: {"kind", "value", "anchor"},
         NativeAsset: {
             "asset_id",
-            "role",
-            "kind",
+            "asset_kind",
             "location",
             "media_type",
             "size_bytes",
-            "checksum_algorithm",
-            "checksum",
-            "extensions",
+            "integrity",
+            "member_manifest_ref",
         },
+        AssetIntegrity: {"algorithm", "digest"},
         AxisDescriptor: {"axis_id", "role", "size", "unit", "direction", "extensions"},
         GeometryDescriptor: {
             "geometry_id",
@@ -342,15 +339,17 @@ def _d(v, typ):
     if typ is NativeAsset:
         return NativeAsset(
             v["asset_id"],
-            v["role"],
-            AssetKind(v["kind"]),
+            AssetKind(v["asset_kind"]),
             _d(v["location"], AssetLocation),
             v["media_type"],
             v["size_bytes"],
-            v["checksum_algorithm"],
-            v["checksum"],
-            v["extensions"],
+            _d(v["integrity"], AssetIntegrity) if v["integrity"] else None,
+            _d(v["member_manifest_ref"], ArtifactRef)
+            if v["member_manifest_ref"]
+            else None,
         )
+    if typ is AssetIntegrity:
+        return AssetIntegrity(v["algorithm"], v["digest"])
     if typ is AxisDescriptor:
         return AxisDescriptor(
             v["axis_id"],

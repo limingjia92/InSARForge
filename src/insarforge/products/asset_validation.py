@@ -68,20 +68,20 @@ def validate_product_assets(product: ProductDraft | Product) -> ProductValidatio
             if path.is_dir()
             else None
         )
-        if actual_kind is not asset.kind:
+        if actual_kind is not asset.asset_kind:
             issues.append(
                 _issue(
                     ValidationIssueKind.ERROR,
                     "validation:asset-kind-mismatch",
                     location,
                     {
-                        "expected_kind": asset.kind.value,
+                        "expected_kind": asset.asset_kind.value,
                         "actual_kind": actual_kind.value if actual_kind else "other",
                     },
                 )
             )
             continue
-        if asset.kind is AssetKind.DIRECTORY:
+        if asset.asset_kind is AssetKind.DIRECTORY:
             issues.append(
                 _issue(
                     ValidationIssueKind.UNVERIFIED,
@@ -100,7 +100,7 @@ def validate_product_assets(product: ProductDraft | Product) -> ProductValidatio
                 )
             )
             continue
-        if asset.checksum_algorithm is None:
+        if asset.integrity is None:
             issues.append(
                 _issue(
                     ValidationIssueKind.UNVERIFIED,
@@ -109,17 +109,17 @@ def validate_product_assets(product: ProductDraft | Product) -> ProductValidatio
                 )
             )
             continue
-        if asset.checksum_algorithm != "sha256":
+        if asset.integrity.algorithm != "sha256":
             issues.append(
                 _issue(
                     ValidationIssueKind.UNVERIFIED,
                     "validation:checksum-algorithm-unverified",
                     location,
-                    {"checksum_algorithm": asset.checksum_algorithm},
+                    {"checksum_algorithm": asset.integrity.algorithm},
                 )
             )
             continue
-        checksum = asset.checksum
+        checksum = asset.integrity.digest
         if (
             checksum is None
             or len(checksum) != 64
