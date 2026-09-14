@@ -1,8 +1,11 @@
+"""Immutable geometry models defined by ADR 0008 and ADR 0009."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from insarforge.contracts.values import FrozenJSON, freeze_json, validate_identifier
+from insarforge.contracts.values import ArtifactRef, validate_identifier
+from insarforge.products.grid import GridDefinition
 from insarforge.products.semantics import SemanticStatus, SemanticValue, UnitSpec
 
 
@@ -10,77 +13,70 @@ from insarforge.products.semantics import SemanticStatus, SemanticValue, UnitSpe
 class AxisDescriptor:
     axis_id: str
     role: str
-    size: int
     unit: SemanticValue[UnitSpec]
     direction: SemanticValue[str]
-    extensions: FrozenJSON
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         validate_identifier(self.axis_id)
         validate_identifier(self.role)
-        if (
-            isinstance(self.size, bool)
-            or not isinstance(self.size, int)
-            or self.size <= 0
-        ):
-            raise ValueError("size")
-        if not isinstance(self.unit, SemanticValue) or not isinstance(
-            self.direction, SemanticValue
-        ):
-            raise TypeError("semantic")
+        if not isinstance(self.unit, SemanticValue):
+            raise TypeError("unit must be a SemanticValue")
         if self.unit.status is SemanticStatus.KNOWN and not isinstance(
             self.unit.value, UnitSpec
         ):
-            raise TypeError("unit")
+            raise TypeError("unit must contain a UnitSpec when KNOWN")
+        if not isinstance(self.direction, SemanticValue):
+            raise TypeError("direction must be a SemanticValue")
         if self.direction.status is SemanticStatus.KNOWN:
-            if not isinstance(self.direction.value, str):
-                raise TypeError("direction")
             validate_identifier(self.direction.value)
-        object.__setattr__(self, "extensions", freeze_json(self.extensions))
 
 
 @dataclass(frozen=True)
 class GeometryDescriptor:
     geometry_id: str
-    domain_id: str
-    shape: tuple[int, ...]
-    axes: tuple[AxisDescriptor, ...]
-    registration: SemanticValue[str]
+    domain: str
     coordinate_reference: SemanticValue[str]
-    extensions: FrozenJSON
+    axes: tuple[AxisDescriptor, ...]
+    shape: tuple[int, ...]
+    grid_definition: SemanticValue[GridDefinition]
+    registration: SemanticValue[str]
+    reference: SemanticValue[ArtifactRef]
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         validate_identifier(self.geometry_id)
-        validate_identifier(self.domain_id)
-        shape = tuple(self.shape)
+        validate_identifier(self.domain)
         axes = tuple(self.axes)
-        if not shape or any(
-            isinstance(x, bool) or not isinstance(x, int) or x <= 0 for x in shape
-        ):
-            raise ValueError("shape")
-        if any(not isinstance(x, AxisDescriptor) for x in axes) or len(axes) != len(
-            shape
-        ):
-            raise ValueError("axes")
-        if len({x.axis_id for x in axes}) != len(axes) or any(
-            x.size != n for x, n in zip(axes, shape)
-        ):
-            raise ValueError("axes")
-        for value, name, identifier in (
-            (self.registration, "registration", True),
-            (self.coordinate_reference, "coordinate_reference", False),
+        shape = tuple(self.shape)
+        if not axes or not shape:
+            raise ValueError("axes and shape must be non-empty")
+        if any(not isinstance(axis, AxisDescriptor) for axis in axes):
+            raise TypeError("axes must contain AxisDescriptor values")
+        if len(axes) != len(shape):
+            raise ValueError("axes and shape must have the same length")
+        if len({axis.axis_id for axis in axes}) != len(axes):
+            raise ValueError("axis_id values must be unique")
+        for size in shape:
+            if isinstance(size, bool) or not isinstance(size, int):
+                raise TypeError("shape values must be integers excluding bool")
+            if size <= 0:
+                raise ValueError("shape values must be positive")
+        for value, typ, name in (
+            (self.coordinate_reference, str, "coordinate_reference"),
+            (self.grid_definition, GridDefinition, "grid_definition"),
+            (self.registration, str, "registration"),
+            (self.reference, ArtifactRef, "reference"),
         ):
             if not isinstance(value, SemanticValue):
-                raise TypeError(name)
-            if value.status is SemanticStatus.KNOWN:
-                if (
-                    not isinstance(value.value, str)
-                    or not value.value
-                    or value.value != value.value.strip()
-                ):
-                    raise ValueError(name)
-                if identifier:
-                    validate_identifier(value.value)
-        object.__setattr__(self, "shape", shape)
+                raise TypeError(f"{name} must be a SemanticValue")
+            if value.status is SemanticStatus.KNOWN and not isinstance(
+                value.value, typ
+            ):
+                raise TypeError(f"{name} has the wrong KNOWN payload type")
+        if self.coordinate_reference.status is SemanticStatus.KNOWN:
+            text = self.coordinate_reference.value
+            if not text or text != text.strip():
+                raise ValueError("coordinate_reference must be non-empty and trimmed")
+        if self.registration.status is SemanticStatus.KNOWN:
+            validate_identifier(self.registration.value)
         object.__setattr__(self, "axes", axes)
-        object.__setattr__(self, "extensions", freeze_json(self.extensions))
+        object.__setattr__(self, "shape", shape)

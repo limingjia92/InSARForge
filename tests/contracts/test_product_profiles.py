@@ -1,11 +1,12 @@
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
-from test_product_models import populated_product, sv
+from test_product_models import populated_product
 
 from insarforge.products.layers import LayerSelector
 from insarforge.products.models import ProductDraft
 from insarforge.products.profiles import (
+    GeometryRequirement,
     LayerRequirement,
     ProductProfile,
     validate_product_profile,
@@ -113,40 +114,183 @@ def test_unknown_and_not_applicable_fail_declared_known_requirements(
     assert not matches(product, requirement(**{match_field: "synthetic:expected"}))
 
 
-def test_geometry_requirement_uses_existing_transitional_geometry_without_alignment():
-    from insarforge.products.geometry import AxisDescriptor, GeometryDescriptor
-    from insarforge.products.semantics import UnitSpec
-
+def test_layer_geometry_requirement_uses_final_domain():
     product = populated_product()
-    unknown = SemanticValue(SemanticStatus.UNKNOWN, None, "synthetic:reason", ())
-    geometry = GeometryDescriptor(
-        "synthetic:geometry",
-        "synthetic:domain",
-        (2,),
-        (
-            AxisDescriptor(
-                "synthetic:axis",
-                "synthetic:role",
-                2,
-                sv(UnitSpec("synthetic:unit", "synthetic:quantity", None)),
-                unknown,
-                {},
-            ),
-        ),
-        unknown,
-        unknown,
-        {},
-    )
-    product = replace(
-        product,
-        geometries=(geometry,),
-        layers=tuple(
-            replace(layer, geometry_ref=sv(geometry.geometry_id))
-            for layer in product.layers
-        ),
-    )
+    domain = product.geometries[0].domain
     assert matches(
         product,
-        requirement(require_known_geometry=True, geometry_domain_id="synthetic:domain"),
+        requirement(require_known_geometry=True, geometry_domain_id=domain),
     )
     assert not matches(product, requirement(geometry_domain_id="synthetic:other"))
+
+
+def geometry_requirement(**changes):
+    values = dict(
+        requirement_id="requirement:geometry",
+        domain_id=None,
+        required_axis_roles=(),
+        require_known_registration=False,
+        require_known_coordinate_reference=False,
+        min_count=1,
+        max_count=None,
+        extensions={},
+    )
+    return GeometryRequirement(**(values | changes))
+
+
+def geometry_report(product, **changes):
+    profile = ProductProfile(
+        "profile:test", 1, (), (), (geometry_requirement(**changes),), (), {}
+    )
+    return validate_product_profile(product, profile)
+
+
+def test_geometry_requirement_compares_public_domain_id_to_final_domain():
+    product = populated_product()
+    assert geometry_report(
+        product, domain_id=product.geometries[0].domain
+    ).is_fully_verified
+    report = geometry_report(product, domain_id="domain:other")
+    assert [issue.code for issue in report.errors] == [
+        "validation:geometry-requirement-unsatisfied"
+    ]
+    assert report.errors[0].details["observed_count"] == 0
+
+
+def test_geometry_role_requirements_ignore_axis_order():
+    product = populated_product()
+    original = product.geometries[0]
+    axes = (
+        replace(original.axes[0], axis_id="axis:test-z", role="role:first"),
+        replace(original.axes[0], axis_id="axis:test-a", role="role:second"),
+    )
+    product = replace(
+        product, layers=(), geometries=(replace(original, axes=axes, shape=(5, 2)),)
+    )
+    assert geometry_report(
+        product, required_axis_roles=("role:second", "role:first")
+    ).is_valid
+    assert geometry_report(product, required_axis_roles=("role:first",)).is_valid
+    assert not geometry_report(product, required_axis_roles=("role:missing",)).is_valid
+    reversed_product = replace(
+        product,
+        geometries=(replace(product.geometries[0], axes=axes[::-1], shape=(2, 5)),),
+    )
+    assert geometry_report(
+        reversed_product, required_axis_roles=("role:first", "role:second")
+    ).is_valid
+    assert not geometry_report(product, required_axis_roles=("axis:test-z",)).is_valid
+
+
+@pytest.mark.parametrize(
+    "field,flag",
+    [
+        ("registration", "require_known_registration"),
+        ("coordinate_reference", "require_known_coordinate_reference"),
+    ],
+)
+@pytest.mark.parametrize("status", list(SemanticStatus))
+def test_geometry_known_semantics_are_checked_without_interpretation(
+    field, flag, status
+):
+    product = populated_product()
+    geometry = product.geometries[0]
+    semantic = SemanticValue(
+        status,
+        getattr(geometry, field).value if status is SemanticStatus.KNOWN else None,
+        "reason:synthetic",
+        (),
+    )
+    product = replace(product, geometries=(replace(geometry, **{field: semantic}),))
+    assert geometry_report(product).is_valid
+    assert geometry_report(product, **{flag: True}).is_valid is (
+        status is SemanticStatus.KNOWN
+    )
+
+
+@pytest.mark.parametrize(
+    "count,min_count,max_count,valid",
+    [
+        (0, 0, 0, True),
+        (0, 1, None, False),
+        (1, 1, 1, True),
+        (1, 2, None, False),
+        (2, 1, 1, False),
+        (2, 1, 2, True),
+    ],
+)
+def test_geometry_cardinality_is_preserved(count, min_count, max_count, valid):
+    product = populated_product()
+    geometry = product.geometries[0]
+    product = replace(
+        product,
+        layers=(),
+        geometries=tuple(
+            replace(geometry, geometry_id=f"geometry:test-{i}") for i in range(count)
+        ),
+    )
+    report = geometry_report(product, min_count=min_count, max_count=max_count)
+    assert report.is_valid is valid
+    if not valid:
+        assert report.errors[0].details["observed_count"] == count
+
+
+@pytest.mark.parametrize(
+    "status", [SemanticStatus.UNKNOWN, SemanticStatus.NOT_APPLICABLE]
+)
+def test_nonknown_layer_geometry_does_not_match_domain(status):
+    product = populated_product()
+    semantic = SemanticValue(status, None, "reason:synthetic", ())
+    product = replace(
+        product,
+        layers=tuple(replace(layer, geometry_ref=semantic) for layer in product.layers),
+    )
+    assert matches(product, requirement())
+    assert not matches(
+        product, requirement(geometry_domain_id=product.geometries[0].domain)
+    )
+
+
+def test_layer_domain_resolves_referenced_geometry_instead_of_first_geometry():
+    product = populated_product()
+    original = product.geometries[0]
+    other = replace(original, geometry_id="geometry:other", domain="domain:other")
+    product = replace(product, geometries=(other, original))
+    assert matches(product, requirement(geometry_domain_id=original.domain))
+    assert not matches(product, requirement(geometry_domain_id=other.domain))
+
+
+def test_missing_geometry_target_does_not_crash_profile_matching():
+    from copy import copy
+
+    product = copy(populated_product())
+    # Constructor normally prevents dangling references; simulate external corruption.
+    object.__setattr__(product, "geometries", ())
+    assert not matches(product, requirement(geometry_domain_id="domain:test"))
+
+
+def test_profile_public_fields_are_not_renamed():
+    assert "domain_id" in {field.name for field in fields(GeometryRequirement)}
+    assert "geometry_domain_id" in {field.name for field in fields(LayerRequirement)}
+    assert "domain" not in {field.name for field in fields(GeometryRequirement)}
+
+
+def test_profiles_do_not_inspect_grid_parameters_or_reference_target(monkeypatch):
+    from insarforge.contracts.values import ArtifactRef
+    from insarforge.products.grid import GridDefinition
+
+    product = populated_product()
+
+    def forbidden(*args):
+        raise AssertionError("Unexpected grid/reference interpretation")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(GridDefinition, "parameters", property(forbidden), raising=False)
+        patch.setattr(ArtifactRef, "locator", property(forbidden), raising=False)
+        patch.setattr(
+            ArtifactRef, "semantic_digest", property(forbidden), raising=False
+        )
+        assert geometry_report(product, domain_id=product.geometries[0].domain).is_valid
+        assert matches(
+            product, requirement(geometry_domain_id=product.geometries[0].domain)
+        )

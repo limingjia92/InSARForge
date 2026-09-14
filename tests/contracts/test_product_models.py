@@ -6,12 +6,15 @@ import pytest
 import insarforge.contracts.plugins as plugins
 from insarforge.contracts.identity import PluginKind, PluginRef
 from insarforge.contracts.plugins import Analyzer, Correction, Processor, Provider
+from insarforge.contracts.values import ArtifactRef
 from insarforge.products.assets import (
     AssetKind,
     AssetLocation,
     AssetLocationKind,
     NativeAsset,
 )
+from insarforge.products.geometry import AxisDescriptor, GeometryDescriptor
+from insarforge.products.grid import GridDefinition
 from insarforge.products.layers import DataLayer, LayerSelector
 from insarforge.products.models import Product, ProductDraft
 from insarforge.products.nodata import NoDataKind, NoDataSpec
@@ -78,28 +81,7 @@ def test_draft_and_cross_references():
     assert draft(layers=()).assets[0].asset_id == "asset:x"
     with pytest.raises(ValueError):
         draft(layers=(layer("geometry:x"),))
-    g = __import__(
-        "insarforge.products.geometry", fromlist=["GeometryDescriptor"]
-    ).GeometryDescriptor(
-        "geometry:x",
-        "domain:test",
-        (2,),
-        (
-            __import__(
-                "insarforge.products.geometry", fromlist=["AxisDescriptor"]
-            ).AxisDescriptor(
-                "axis:x",
-                "role:test",
-                2,
-                sv(UnitSpec("unit:x", "quantity:x", None)),
-                sv("direction:x"),
-                {},
-            ),
-        ),
-        unknown(),
-        unknown(),
-        {},
-    )
+    g = final_geometry()
     assert draft(geometries=(g,), layers=(layer(),))
     with pytest.raises(ValueError):
         draft(assets=(asset(), asset()))
@@ -169,9 +151,43 @@ def test_forward_references_resolve():
         assert "ProductDraft" in str(hints.get("return"))
 
 
+def final_geometry():
+    return GeometryDescriptor(
+        geometry_id="geometry:x",
+        domain="domain:test",
+        coordinate_reference=sv("synthetic coordinate text"),
+        axes=(
+            AxisDescriptor(
+                "axis:x",
+                "role:test",
+                sv(UnitSpec("unit:x", "quantity:x", None)),
+                sv("direction:test"),
+            ),
+        ),
+        shape=(2,),
+        grid_definition=sv(
+            GridDefinition(
+                "grid:test-v1", {"nested": {"values": [1, 2], "text": "测试"}}
+            )
+        ),
+        registration=sv("registration:test"),
+        reference=sv(
+            ArtifactRef(
+                "record:test",
+                "schema:test",
+                1,
+                "semantic:test",
+                "manifest:test",
+                "synthetic://unresolved/record",
+            )
+        ),
+    )
+
+
 def populated_product():
-    """Final DataLayer fixture with one native asset and no geometric dependency."""
-    source = layer(None)
+    """Final geometry and layers with matching synthetic dimension identifiers."""
+    geometry = final_geometry()
+    source = layer(geometry.geometry_id)
     return Product(
         "product:synthetic",
         1,
@@ -183,7 +199,7 @@ def populated_product():
         None,
         (),
         (asset(),),
-        (),
+        (geometry,),
         (
             source,
             replace(source, layer_id="mask:a"),

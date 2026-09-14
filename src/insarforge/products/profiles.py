@@ -167,7 +167,7 @@ def _asset_match(a, r):
 
 def _geom_match(g, r):
     return (
-        (r.domain_id is None or g.domain_id == r.domain_id)
+        (r.domain_id is None or g.domain == r.domain_id)
         and all(x in [a.role for a in g.axes] for x in r.required_axis_roles)
         and (
             not r.require_known_registration
@@ -235,7 +235,7 @@ def _layer_match(layer, r, assets, geoms):
     ) and (
         r.geometry_domain_id is None
         or g is not None
-        and g.domain_id == r.geometry_domain_id
+        and g.domain == r.geometry_domain_id
     )
 
 

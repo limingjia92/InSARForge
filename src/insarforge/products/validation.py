@@ -106,13 +106,32 @@ def validate_product_structure(
     }
     asset_ids = {a.asset_id for a in assets if isinstance(a, NativeAsset)}
     layer_ids = {layer.layer_id for layer in layers if isinstance(layer, DataLayer)}
+    geometry_axis_ids = {}
     for i, geometry in enumerate(geometries):
         if not isinstance(geometry, GeometryDescriptor):
             continue
+        issue_count = len(issues)
+        for name in ("axes", "shape"):
+            if not isinstance(getattr(geometry, name), (tuple, list)):
+                issues.append(
+                    _issue("validation:wrong-element-type", f"geometries[{i}].{name}")
+                )
+        if len(issues) != issue_count:
+            continue
+        if not geometry.axes or not geometry.shape:
+            issues.append(_issue("validation:empty-geometry", f"geometries[{i}]"))
         if len(geometry.shape) != len(geometry.axes):
             issues.append(
                 _issue("validation:geometry-axis-count-mismatch", f"geometries[{i}]")
             )
+        for j, size in enumerate(geometry.shape):
+            if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+                issues.append(
+                    _issue(
+                        "validation:invalid-geometry-shape",
+                        f"geometries[{i}].shape[{j}]",
+                    )
+                )
         axis_ids = set()
         for j, axis in enumerate(geometry.axes):
             if not isinstance(axis, AxisDescriptor):
@@ -127,17 +146,11 @@ def validate_product_structure(
                 )
             else:
                 axis_ids.add(axis.axis_id)
-            if (
-                isinstance(axis, AxisDescriptor)
-                and j < len(geometry.shape)
-                and axis.size != geometry.shape[j]
-            ):
-                issues.append(
-                    _issue(
-                        "validation:geometry-axis-size-mismatch",
-                        f"geometries[{i}].axes[{j}]",
-                    )
-                )
+        # Invalid geometry already has findings; do not cascade alignment errors.
+        if len(issues) == issue_count:
+            geometry_axis_ids[geometry.geometry_id] = tuple(
+                axis.axis_id for axis in geometry.axes
+            )
     for i, layer in enumerate(layers):
         if not isinstance(layer, DataLayer):
             continue
@@ -156,13 +169,28 @@ def validate_product_structure(
             issues.append(
                 _issue("validation:missing-asset-reference", f"layers[{i}].asset_id")
             )
-        if (
-            layer.geometry_ref.status is SemanticStatus.KNOWN
-            and layer.geometry_ref.value not in geometry_ids
-        ):
+        if layer.geometry_ref.status is not SemanticStatus.KNOWN:
+            continue
+        geometry_id = layer.geometry_ref.value
+        if geometry_id not in geometry_ids:
             issues.append(
                 _issue(
                     "validation:missing-geometry-reference", f"layers[{i}].geometry_ref"
+                )
+            )
+            continue
+        expected_dimensions = geometry_axis_ids.get(geometry_id)
+        if expected_dimensions is not None and layer.dimensions != expected_dimensions:
+            issues.append(
+                _issue(
+                    "validation:layer-dimensions-geometry-mismatch",
+                    f"layers[{i}].dimensions",
+                    {
+                        "layer_id": layer.layer_id,
+                        "geometry_id": geometry_id,
+                        "layer_dimensions": layer.dimensions,
+                        "geometry_axis_ids": expected_dimensions,
+                    },
                 )
             )
     return ProductValidationReport(tuple(issues))

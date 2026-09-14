@@ -3,7 +3,8 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 
-from insarforge.contracts.values import FrozenJSON, freeze_json
+from insarforge.contracts.values import ArtifactRef, FrozenJSON, freeze_json
+from insarforge.products.grid import GridDefinition
 from insarforge.products.models import Product
 from insarforge.products.nodata import NoDataSpec
 from insarforge.products.semantics import (
@@ -52,6 +53,10 @@ def _semantic(value):
 
 
 def _value(value):
+    if isinstance(value, ArtifactRef):
+        return _ref(value)
+    if isinstance(value, GridDefinition):
+        return {"format_id": value.format_id, "parameters": _value(value.parameters)}
     if isinstance(value, NoDataSpec):
         return {
             "kind": value.kind.value,
@@ -128,22 +133,21 @@ def product_semantic_material(
             geometries.append(
                 {
                     "geometry_id": g.geometry_id,
-                    "domain_id": g.domain_id,
-                    "shape": list(g.shape),
+                    "domain": g.domain,
+                    "coordinate_reference": _semantic(g.coordinate_reference),
                     "axes": [
                         {
                             "axis_id": a.axis_id,
                             "role": a.role,
-                            "size": a.size,
                             "unit": _semantic(a.unit),
                             "direction": _semantic(a.direction),
-                            "extensions": _value(a.extensions),
                         }
                         for a in g.axes
                     ],
+                    "shape": list(g.shape),
+                    "grid_definition": _semantic(g.grid_definition),
                     "registration": _semantic(g.registration),
-                    "coordinate_reference": _semantic(g.coordinate_reference),
-                    "extensions": _value(g.extensions),
+                    "reference": _semantic(g.reference),
                 }
             )
         layers = [

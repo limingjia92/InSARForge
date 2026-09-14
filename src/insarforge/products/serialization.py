@@ -14,6 +14,7 @@ from insarforge.products.assets import (
     NativeAsset,
 )
 from insarforge.products.geometry import AxisDescriptor, GeometryDescriptor
+from insarforge.products.grid import GridDefinition
 from insarforge.products.layers import DataLayer, LayerSelector
 from insarforge.products.models import Product
 from insarforge.products.nodata import NoDataKind, NoDataSpec
@@ -159,21 +160,22 @@ def _e(x):
     if isinstance(x, AxisDescriptor):
         return {
             "axis_id": x.axis_id,
-            "size": x.size,
+            "role": x.role,
             "unit": _e(x.unit),
             "direction": _e(x.direction),
-            "role": x.role,
-            "extensions": _plain(x.extensions),
         }
+    if isinstance(x, GridDefinition):
+        return {"format_id": x.format_id, "parameters": _plain(x.parameters)}
     if isinstance(x, GeometryDescriptor):
         return {
             "geometry_id": x.geometry_id,
-            "domain_id": x.domain_id,
-            "shape": list(x.shape),
-            "axes": [_e(y) for y in x.axes],
-            "registration": _e(x.registration),
+            "domain": x.domain,
             "coordinate_reference": _e(x.coordinate_reference),
-            "extensions": _plain(x.extensions),
+            "axes": [_e(y) for y in x.axes],
+            "shape": list(x.shape),
+            "grid_definition": _e(x.grid_definition),
+            "registration": _e(x.registration),
+            "reference": _e(x.reference),
         }
     if isinstance(x, NoDataSpec):
         return {
@@ -259,7 +261,7 @@ def _sv(v, typ=None):
         status,
         value,
         v["reason_code"],
-        tuple(_d(a, ArtifactRef) for a in v["evidence_refs"]),
+        tuple(_d(a, ArtifactRef) for a in _seq(v["evidence_refs"], "evidence_refs")),
     )
 
 
@@ -294,15 +296,17 @@ def _d(v, typ):
             "member_manifest_ref",
         },
         AssetIntegrity: {"algorithm", "digest"},
-        AxisDescriptor: {"axis_id", "role", "size", "unit", "direction", "extensions"},
+        AxisDescriptor: {"axis_id", "role", "unit", "direction"},
+        GridDefinition: {"format_id", "parameters"},
         GeometryDescriptor: {
             "geometry_id",
-            "domain_id",
-            "shape",
-            "axes",
-            "registration",
+            "domain",
             "coordinate_reference",
-            "extensions",
+            "axes",
+            "shape",
+            "grid_definition",
+            "registration",
+            "reference",
         },
         NoDataSpec: {"kind", "value", "mask_layer_ref"},
         LayerSelector: {"format_id", "selector_string"},
@@ -367,20 +371,21 @@ def _d(v, typ):
         return AxisDescriptor(
             v["axis_id"],
             v["role"],
-            v["size"],
             _sv(v["unit"], UnitSpec),
             _sv(v["direction"], str),
-            v["extensions"],
         )
+    if typ is GridDefinition:
+        return GridDefinition(v["format_id"], v["parameters"])
     if typ is GeometryDescriptor:
         return GeometryDescriptor(
             v["geometry_id"],
-            v["domain_id"],
-            tuple(_seq(v["shape"], "shape")),
-            tuple(_d(a, AxisDescriptor) for a in _seq(v["axes"], "axes")),
-            _sv(v["registration"], str),
+            v["domain"],
             _sv(v["coordinate_reference"], str),
-            v["extensions"],
+            tuple(_d(a, AxisDescriptor) for a in _seq(v["axes"], "axes")),
+            tuple(_seq(v["shape"], "shape")),
+            _sv(v["grid_definition"], GridDefinition),
+            _sv(v["registration"], str),
+            _sv(v["reference"], ArtifactRef),
         )
     if typ is LayerSelector:
         return LayerSelector(v["format_id"], v["selector_string"])
