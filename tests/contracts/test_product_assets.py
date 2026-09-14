@@ -11,7 +11,12 @@ from insarforge.products.assets import (
 
 
 def loc(value="/data/example.dat", anchor=None):
-    return AssetLocation(AssetLocationKind.LOCAL_PATH, value, anchor)
+    kind = (
+        AssetLocationKind.MANIFEST_RELATIVE
+        if anchor is not None
+        else AssetLocationKind.ABSOLUTE_LOCAL
+    )
+    return AssetLocation(kind, value, anchor)
 
 
 def asset(**kwargs):
@@ -36,8 +41,9 @@ def test_kinds_and_locations():
         ("DIRECTORY", "directory"),
     ]
     assert [(x.name, x.value) for x in AssetLocationKind] == [
-        ("LOCAL_PATH", "local_path"),
-        ("URI", "uri"),
+        ("MANIFEST_RELATIVE", "manifest_relative"),
+        ("ABSOLUTE_LOCAL", "absolute_local"),
+        ("REMOTE_REFERENCE", "remote_reference"),
     ]
     loc()
     with pytest.raises(ValueError):
@@ -53,12 +59,12 @@ def test_kinds_and_locations():
         loc(" /x")
     with pytest.raises(ValueError):
         loc("/x ")
-    assert AssetLocation(AssetLocationKind.URI, "https://example/x", None)
-    assert AssetLocation(AssetLocationKind.URI, "s3://bucket/key", None)
+    assert AssetLocation(AssetLocationKind.REMOTE_REFERENCE, "https://example/x", None)
+    assert AssetLocation(AssetLocationKind.REMOTE_REFERENCE, "s3://bucket/key", None)
     with pytest.raises(ValueError):
-        AssetLocation(AssetLocationKind.URI, "bucket/key", None)
+        AssetLocation(AssetLocationKind.REMOTE_REFERENCE, "bucket/key", None)
     with pytest.raises(ValueError):
-        AssetLocation(AssetLocationKind.URI, "https://x", Path("/tmp"))
+        AssetLocation(AssetLocationKind.REMOTE_REFERENCE, "https://x", Path("/tmp"))
 
 
 def test_native_asset_validation_and_freezing():

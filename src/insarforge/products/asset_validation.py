@@ -18,7 +18,11 @@ def _issue(kind, code, location, details=None):
 
 def _path(location):
     value = Path(location.value)
-    return value if value.is_absolute() else location.anchor / value
+    return (
+        value
+        if location.kind is AssetLocationKind.ABSOLUTE_LOCAL
+        else location.anchor / value
+    )
 
 
 def validate_product_assets(product: ProductDraft | Product) -> ProductValidationReport:
@@ -27,7 +31,7 @@ def validate_product_assets(product: ProductDraft | Product) -> ProductValidatio
     issues = []
     for asset in product.assets:
         location = f"assets[{asset.asset_id}]"
-        if asset.location.kind is AssetLocationKind.URI:
+        if asset.location.kind is AssetLocationKind.REMOTE_REFERENCE:
             issues.append(
                 _issue(
                     ValidationIssueKind.UNVERIFIED,

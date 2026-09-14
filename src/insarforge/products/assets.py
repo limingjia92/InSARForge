@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from insarforge.contracts.values import FrozenJSON, freeze_json, validate_identifier
 
@@ -14,8 +15,9 @@ class AssetKind(Enum):
 
 
 class AssetLocationKind(Enum):
-    LOCAL_PATH = "local_path"
-    URI = "uri"
+    MANIFEST_RELATIVE = "manifest_relative"
+    ABSOLUTE_LOCAL = "absolute_local"
+    REMOTE_REFERENCE = "remote_reference"
 
 
 @dataclass(frozen=True)
@@ -33,18 +35,50 @@ class AssetLocation:
             or self.value != self.value.strip()
         ):
             raise ValueError("value")
-        if self.kind is AssetLocationKind.LOCAL_PATH:
+        if any(c in self.value for c in "\x00\r\n\t") or re.search(
+            r"(^|/)(?:~|\$\{?[^/]+\}?)", self.value
+        ):
+            raise ValueError("value")
+        if self.kind is AssetLocationKind.MANIFEST_RELATIVE:
+            if (
+                Path(self.value).is_absolute()
+                or not isinstance(self.anchor, Path)
+                or not self.anchor.is_absolute()
+                or any(p == ".." for p in Path(self.value).parts)
+            ):
+                raise ValueError("anchor")
+        elif self.kind is AssetLocationKind.ABSOLUTE_LOCAL:
             path = Path(self.value)
-            if path.is_absolute():
-                if self.anchor is not None:
-                    raise ValueError("anchor")
-            else:
-                if not isinstance(self.anchor, Path) or not self.anchor.is_absolute():
-                    raise ValueError("anchor")
+            if not path.is_absolute() or self.anchor is not None:
+                raise ValueError("anchor")
         else:
             if self.anchor is not None:
                 raise ValueError("anchor")
-            if not urlparse(self.value).scheme:
+            p = urlparse(self.value)
+            bad = {
+                "token",
+                "access_token",
+                "auth",
+                "authorization",
+                "credential",
+                "credentials",
+                "signature",
+                "sig",
+                "x-amz-signature",
+                "x-amz-credential",
+                "x-amz-security-token",
+                "x-goog-signature",
+                "x-goog-credential",
+                "x-amz-algorithm",
+                "x-amz-date",
+                "x-amz-expires",
+            }
+            if (
+                not p.scheme
+                or p.username
+                or p.password
+                or any(k.lower() in bad for k in parse_qs(p.query))
+            ):
                 raise ValueError("uri")
 
 

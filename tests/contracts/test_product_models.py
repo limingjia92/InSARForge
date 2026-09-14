@@ -35,7 +35,7 @@ def asset():
         "asset:x",
         "role:test",
         AssetKind.FILE,
-        AssetLocation(AssetLocationKind.LOCAL_PATH, "/tmp/x", None),
+        AssetLocation(AssetLocationKind.ABSOLUTE_LOCAL, "/tmp/x", None),
         None,
         None,
         None,
