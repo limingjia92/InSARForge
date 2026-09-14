@@ -1,11 +1,14 @@
-from dataclasses import fields, replace
+from dataclasses import MISSING, fields, replace
+from types import MappingProxyType
 
 import pytest
 from test_product_models import populated_product
 
+from insarforge.contracts.values import freeze_json
 from insarforge.products.layers import LayerSelector
 from insarforge.products.models import ProductDraft
 from insarforge.products.profiles import (
+    AssetRequirement,
     GeometryRequirement,
     LayerRequirement,
     ProductProfile,
@@ -294,3 +297,167 @@ def test_profiles_do_not_inspect_grid_parameters_or_reference_target(monkeypatch
         assert matches(
             product, requirement(geometry_domain_id=product.geometries[0].domain)
         )
+
+
+EXTENSION_CONTRACTS = (
+    AssetRequirement("requirement:asset", (), 1, None, {}),
+    requirement(),
+    geometry_requirement(),
+    ProductProfile("profile:test", 1, (), (), (), (), {}),
+)
+
+
+@pytest.mark.parametrize(
+    "contract", EXTENSION_CONTRACTS, ids=lambda x: type(x).__name__
+)
+@pytest.mark.parametrize(
+    "extensions",
+    [
+        {},
+        {"vendor-x:flag": True},
+        {"future-tool:data": {"values": [1, 2]}},
+        {"insarforge:test-value": 1},
+    ],
+)
+def test_profile_extension_namespace_acceptance(contract, extensions):
+    stored = replace(contract, extensions=extensions).extensions
+    assert stored == freeze_json(extensions)
+    assert list(stored) == list(extensions)
+
+
+@pytest.mark.parametrize(
+    "contract", EXTENSION_CONTRACTS, ids=lambda x: type(x).__name__
+)
+@pytest.mark.parametrize("key", ["flag", ":flag", "vendor:", "a:b:c"])
+def test_profile_extension_invalid_keys(contract, key):
+    with pytest.raises(ValueError):
+        replace(contract, extensions={key: 1})
+
+
+@pytest.mark.parametrize(
+    "contract", EXTENSION_CONTRACTS, ids=lambda x: type(x).__name__
+)
+@pytest.mark.parametrize("extensions", [None, [], (), "text", 1, {1: True}])
+def test_profile_extension_invalid_types(contract, extensions):
+    with pytest.raises(TypeError):
+        replace(contract, extensions=extensions)
+
+
+@pytest.mark.parametrize(
+    "contract", EXTENSION_CONTRACTS, ids=lambda x: type(x).__name__
+)
+@pytest.mark.parametrize("view", [False, True], ids=["dict", "backing-view"])
+def test_profile_extensions_own_nested_snapshot(contract, view):
+    values = [3, 1, 2]
+    nested = {"values": values}
+    source = {"future-tool:data": nested}
+    owned = replace(contract, extensions=MappingProxyType(source) if view else source)
+    source["vendor:extra"] = True
+    nested["extra"] = False
+    values.append(4)
+    assert owned.extensions == {"future-tool:data": {"values": (3, 1, 2)}}
+    with pytest.raises(TypeError):
+        owned.extensions["vendor:extra"] = True
+    with pytest.raises(TypeError):
+        owned.extensions["future-tool:data"]["extra"] = True
+    with pytest.raises(TypeError):
+        owned.extensions["future-tool:data"]["values"][0] = 0
+
+
+@pytest.mark.parametrize(
+    "contract", EXTENSION_CONTRACTS, ids=lambda x: type(x).__name__
+)
+def test_profile_extensions_are_semantic_state(contract):
+    original = replace(contract, extensions={"Vendor:flag": 1, "vendor:flag": 2})
+    assert original.extensions == {"Vendor:flag": 1, "vendor:flag": 2}
+    assert original == replace(
+        contract, extensions={"vendor:flag": 2, "Vendor:flag": 1}
+    )
+    assert original != replace(original, extensions={"vendor:flag": 2})
+    assert original != replace(
+        original, extensions={"Vendor:flag": 2, "vendor:flag": 2}
+    )
+    ordered = replace(contract, extensions={"vendor:data": [3, 1, 2]})
+    assert ordered != replace(ordered, extensions={"vendor:data": [1, 2, 3]})
+
+
+@pytest.mark.parametrize(
+    "slot,requirement,target_collection",
+    [
+        ("asset_requirements", EXTENSION_CONTRACTS[0], "assets"),
+        ("layer_requirements", EXTENSION_CONTRACTS[1], "layers"),
+        ("geometry_requirements", EXTENSION_CONTRACTS[2], "geometries"),
+    ],
+)
+def test_requirement_extensions_are_not_hidden_target_predicates(
+    slot, requirement, target_collection
+):
+    product = populated_product()
+    assert all(
+        not hasattr(target, "extensions")
+        for target in getattr(product, target_collection)
+    )
+    profile = EXTENSION_CONTRACTS[3]
+    for extensions in ({}, {"future-tool:data": {"opaque": [1, 2]}}):
+        req = replace(requirement, extensions=extensions)
+        assert req.extensions == freeze_json(extensions)
+        matching = replace(profile, **{slot: (req,)})
+        assert validate_product_profile(product, matching).is_valid
+        failing = replace(matching, **{slot: (replace(req, min_count=99),)})
+        assert not validate_product_profile(product, failing).is_valid
+
+
+@pytest.mark.parametrize("profile_extensions", [{}, {"vendor:flag": True}])
+@pytest.mark.parametrize(
+    "product_extensions", [{}, {"vendor:flag": False}, {"other:data": [1, 2]}]
+)
+def test_profile_extensions_are_not_product_extension_predicates(
+    profile_extensions, product_extensions
+):
+    product = replace(populated_product(), extensions=product_extensions)
+    profile = replace(
+        EXTENSION_CONTRACTS[3],
+        extensions=profile_extensions,
+        allowed_product_kinds=(product.product_kind,),
+        layer_requirements=(requirement(),),
+    )
+    assert validate_product_profile(product, profile).is_valid
+    assert not validate_product_profile(
+        product, replace(profile, allowed_product_kinds=("synthetic:other",))
+    ).is_valid
+    assert not validate_product_profile(
+        product, replace(profile, layer_requirements=(requirement(min_count=99),))
+    ).is_valid
+
+
+@pytest.mark.parametrize(
+    "contract,expected",
+    [
+        (
+            AssetRequirement,
+            "requirement_id allowed_kinds min_count max_count extensions",
+        ),
+        (
+            LayerRequirement,
+            "requirement_id role selector_kind geometry_domain_id quantity_kind unit_id "
+            "sign_convention_id require_known_quantity require_known_unit require_known_sign "
+            "require_known_geometry min_count max_count extensions",
+        ),
+        (
+            GeometryRequirement,
+            "requirement_id domain_id required_axis_roles require_known_registration "
+            "require_known_coordinate_reference min_count max_count extensions",
+        ),
+        (
+            ProductProfile,
+            "profile_id profile_version allowed_product_kinds asset_requirements "
+            "geometry_requirements layer_requirements extensions",
+        ),
+    ],
+)
+def test_exact_profile_public_field_shapes(contract, expected):
+    assert [field.name for field in fields(contract)] == expected.split()
+    assert all(
+        field.default is MISSING and field.default_factory is MISSING
+        for field in fields(contract)
+    )

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from insarforge.contracts.values import FrozenJSON, freeze_json, validate_identifier
+from insarforge.contracts._extensions import _freeze_extensions
+from insarforge.contracts.values import FrozenJSON, validate_identifier
 from insarforge.products.assets import AssetKind
 from insarforge.products.models import Product, ProductDraft
 from insarforge.products.semantics import SemanticStatus, SignSpec, UnitSpec
@@ -52,7 +53,7 @@ class AssetRequirement:
             raise ValueError("allowed_kinds")
         _card(self.min_count, self.max_count)
         object.__setattr__(self, "allowed_kinds", kinds)
-        object.__setattr__(self, "extensions", freeze_json(self.extensions))
+        object.__setattr__(self, "extensions", _freeze_extensions(self.extensions))
 
 
 @dataclass(frozen=True)
@@ -78,7 +79,7 @@ class GeometryRequirement:
         object.__setattr__(
             self, "required_axis_roles", _ids(self.required_axis_roles, "axis roles")
         )
-        object.__setattr__(self, "extensions", freeze_json(self.extensions))
+        object.__setattr__(self, "extensions", _freeze_extensions(self.extensions))
 
 
 @dataclass(frozen=True)
@@ -121,7 +122,7 @@ class LayerRequirement:
         ):
             raise TypeError("known flags")
         _card(self.min_count, self.max_count)
-        object.__setattr__(self, "extensions", freeze_json(self.extensions))
+        object.__setattr__(self, "extensions", _freeze_extensions(self.extensions))
 
 
 @dataclass(frozen=True)
@@ -158,7 +159,7 @@ class ProductProfile:
         object.__setattr__(self, "asset_requirements", ar)
         object.__setattr__(self, "geometry_requirements", gr)
         object.__setattr__(self, "layer_requirements", lr)
-        object.__setattr__(self, "extensions", freeze_json(self.extensions))
+        object.__setattr__(self, "extensions", _freeze_extensions(self.extensions))
 
 
 def _asset_match(a, r):
