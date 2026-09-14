@@ -4,6 +4,7 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
+from insarforge.contracts._persistence import _validate_persistence_value
 from insarforge.contracts.identity import PluginKind, PluginRef
 from insarforge.contracts.values import ArtifactRef, FrozenJSON, freeze_json
 from insarforge.products.assets import (
@@ -227,13 +228,15 @@ def _e(x):
 def product_to_manifest_value(product):
     if not isinstance(product, Product):
         raise TypeError("product")
-    return freeze_json(
+    value = freeze_json(
         {
             "schema_id": PRODUCT_MANIFEST_SCHEMA_ID,
             "schema_version": 1,
             "product": _e(product),
         }
     )
+    _validate_persistence_value(value)
+    return value
 
 
 def product_to_manifest_bytes(product):
@@ -338,7 +341,9 @@ def _d(v, typ):
             v["positive_direction"],
             v["minuend_ref"],
             v["subtrahend_ref"],
-            tuple(_d(a, ArtifactRef) for a in v["evidence_refs"]),
+            tuple(
+                _d(a, ArtifactRef) for a in _seq(v["evidence_refs"], "evidence_refs")
+            ),
         )
     if typ is PhysicalQuantity:
         return PhysicalQuantity(
@@ -348,10 +353,16 @@ def _d(v, typ):
             tuple(_d(a, ArtifactRef) for a in v["evidence_refs"]),
         )
     if typ is AssetLocation:
+        anchor = v["anchor"]
+        if anchor is not None:
+            if not isinstance(anchor, str):
+                raise TypeError("anchor")
+            if not anchor:
+                raise ValueError("anchor")
         return AssetLocation(
             AssetLocationKind(v["kind"]),
             v["value"],
-            Path(v["anchor"]) if v["anchor"] else None,
+            Path(anchor) if anchor is not None else None,
         )
     if typ is NativeAsset:
         return NativeAsset(
@@ -360,9 +371,9 @@ def _d(v, typ):
             _d(v["location"], AssetLocation),
             v["media_type"],
             v["size_bytes"],
-            _d(v["integrity"], AssetIntegrity) if v["integrity"] else None,
+            _d(v["integrity"], AssetIntegrity) if v["integrity"] is not None else None,
             _d(v["member_manifest_ref"], ArtifactRef)
-            if v["member_manifest_ref"]
+            if v["member_manifest_ref"] is not None
             else None,
         )
     if typ is AssetIntegrity:
@@ -449,7 +460,9 @@ def product_from_manifest_value(value):
         p["profile_version"],
         _d(p["producer"], PluginRef),
         p["producer_implementation_version"],
-        _d(p["provenance_ref"], ArtifactRef) if p["provenance_ref"] else None,
+        _d(p["provenance_ref"], ArtifactRef)
+        if p["provenance_ref"] is not None
+        else None,
         tuple(_d(x, ArtifactRef) for x in _seq(p["lineage"], "lineage")),
         tuple(_d(x, NativeAsset) for x in _seq(p["assets"], "assets")),
         tuple(_d(x, GeometryDescriptor) for x in _seq(p["geometries"], "geometries")),

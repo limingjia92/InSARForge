@@ -3,27 +3,18 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from insarforge.contracts.errors import (
+    DuplicatePluginRegistrationError as DuplicatePluginRegistrationError,
+)
+from insarforge.contracts.errors import (
+    PluginAPIVersionMismatchError as PluginAPIVersionMismatchError,
+)
+from insarforge.contracts.errors import PluginRegistryError as PluginRegistryError
+from insarforge.contracts.errors import (
+    PluginRegistrySealedError as PluginRegistrySealedError,
+)
+from insarforge.contracts.errors import UnknownPluginError as UnknownPluginError
 from insarforge.contracts.identity import PluginDescriptor, PluginKind, PluginRef
-
-
-class PluginRegistryError(RuntimeError):
-    pass
-
-
-class DuplicatePluginRegistrationError(PluginRegistryError):
-    pass
-
-
-class UnknownPluginError(PluginRegistryError):
-    pass
-
-
-class PluginRegistrySealedError(PluginRegistryError):
-    pass
-
-
-class PluginAPIVersionMismatchError(PluginRegistryError):
-    pass
 
 
 @dataclass(frozen=True)
@@ -85,9 +76,12 @@ class PluginRegistry:
         if not isinstance(ref, PluginRef):
             raise TypeError("ref")
         try:
-            return self._entries[(ref.kind, ref.plugin_id)]
+            registration = self._entries[(ref.kind, ref.plugin_id)]
         except KeyError as exc:
             raise UnknownPluginError("unknown plugin") from exc
+        if ref.api_version != registration.descriptor.api_version:
+            raise PluginAPIVersionMismatchError("plugin API version mismatch")
+        return registration
 
     def get_descriptor(self, ref: PluginRef) -> PluginDescriptor:
         return self.resolve(ref).descriptor

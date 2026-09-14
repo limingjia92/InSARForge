@@ -71,3 +71,24 @@ def test_lightweight_contract_package_and_protocol_invariants():
         not any(isinstance(x, ast.FunctionDef) and x.name == "run" for x in n.body)
         for n in protocols
     )
+
+
+def test_persistence_guard_imports_without_config_or_heavy_dependencies():
+    code = """
+import importlib.abc
+import sys
+
+class BlockHeavy(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.startswith(("insarforge.config", "pydantic", "yaml", "numpy", "h5py")):
+            raise AssertionError("forbidden dependency: " + fullname)
+
+sys.meta_path.insert(0, BlockHeavy())
+from insarforge.contracts import _persistence
+from insarforge.products import serialization, directory_manifest_serialization
+assert not any(name.startswith("insarforge.config") for name in sys.modules)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code], check=True, capture_output=True, text=True
+    )
+    assert result.stdout == result.stderr == ""

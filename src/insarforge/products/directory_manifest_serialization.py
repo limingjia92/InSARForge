@@ -1,5 +1,7 @@
 from collections.abc import Mapping
 
+from insarforge.contracts._persistence import _validate_persistence_value
+
 from .assets import AssetIntegrity, AssetKind
 from .directory_manifest import DirectoryMember, DirectoryMemberManifest
 from .serialization import canonical_json_bytes, strict_json_loads
@@ -11,7 +13,7 @@ DIRECTORY_MEMBER_MANIFEST_SCHEMA_VERSION = 1
 def directory_member_manifest_to_value(m):
     if not isinstance(m, DirectoryMemberManifest):
         raise TypeError("manifest")
-    return {
+    value = {
         "schema_id": DIRECTORY_MEMBER_MANIFEST_SCHEMA_ID,
         "schema_version": 1,
         "members": [
@@ -26,6 +28,8 @@ def directory_member_manifest_to_value(m):
             for x in m.members
         ],
     }
+    _validate_persistence_value(value)
+    return value
 
 
 def directory_member_manifest_to_bytes(m):

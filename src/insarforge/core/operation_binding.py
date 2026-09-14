@@ -1,14 +1,10 @@
+from insarforge.contracts.errors import OperationBindingError as OperationBindingError
+from insarforge.contracts.errors import (
+    OperationCapabilityUnsatisfiedError as OperationCapabilityUnsatisfiedError,
+)
 from insarforge.contracts.identity import PluginDescriptor
 from insarforge.contracts.operations import OperationBinding
 from insarforge.core.registry import PluginRegistry
-
-
-class OperationBindingError(RuntimeError):
-    pass
-
-
-class OperationCapabilityUnsatisfiedError(OperationBindingError):
-    pass
 
 
 def resolve_operation_binding(

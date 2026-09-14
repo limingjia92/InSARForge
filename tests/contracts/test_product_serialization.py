@@ -464,3 +464,154 @@ def test_reference_decoder_does_not_dereference_and_allows_missing_identity(
     assert decoded.geometries[0].reference.value.semantic_digest is None
     assert decoded.geometries[0].reference.value.locator == target["locator"]
     assert product_from_manifest_bytes(product_to_manifest_bytes(decoded)) == decoded
+
+
+@pytest.mark.parametrize("via_bytes", [False, True], ids=["value", "bytes"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("assets", 0, "integrity"),
+        ("assets", 0, "member_manifest_ref"),
+        ("provenance_ref",),
+        ("assets", 0, "location", "anchor"),
+    ],
+    ids=["integrity", "member-ref", "provenance-ref", "anchor"],
+)
+@pytest.mark.parametrize("malformed", [{}, [], False, 0, "", True, 1, ["invalid"]])
+def test_s1_optional_values_do_not_collapse_to_null(via_bytes, path, malformed):
+    value = json.loads(product_to_manifest_bytes(populated_product()))
+    node = value["product"]
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]] = malformed
+    with pytest.raises((TypeError, ValueError)):
+        if via_bytes:
+            product_from_manifest_bytes(canonical_json_bytes(value))
+        else:
+            product_from_manifest_value(value)
+
+
+@pytest.mark.parametrize("via_bytes", [False, True], ids=["value", "bytes"])
+@pytest.mark.parametrize("malformed", [{}, "", False, 0, None, {"item": []}, [{}]])
+def test_s1_sign_evidence_requires_array_and_typed_elements(via_bytes, malformed):
+    value = json.loads(product_to_manifest_bytes(populated_product()))
+    value["product"]["layers"][0]["sign"]["value"]["evidence_refs"] = malformed
+    with pytest.raises((TypeError, ValueError)):
+        if via_bytes:
+            product_from_manifest_bytes(canonical_json_bytes(value))
+        else:
+            product_from_manifest_value(value)
+
+
+def s1_product_with_optional_values():
+    from pathlib import Path
+
+    from insarforge.contracts.values import ArtifactRef
+    from insarforge.products.assets import (
+        AssetIntegrity,
+        AssetKind,
+        AssetLocation,
+        AssetLocationKind,
+    )
+
+    product = populated_product()
+    first = ArtifactRef("synthetic:z", "synthetic:schema", 1, None, "digest:z", "z")
+    second = replace(first, record_id="synthetic:a", manifest_digest="digest:a")
+    source = replace(
+        product.assets[0],
+        location=AssetLocation(
+            AssetLocationKind.MANIFEST_RELATIVE,
+            "synthetic-file",
+            Path("/tmp/synthetic"),
+        ),
+        integrity=AssetIntegrity("synthetic:algorithm", "synthetic:digest"),
+    )
+    directory = replace(
+        product.assets[0],
+        asset_id="synthetic:directory",
+        asset_kind=AssetKind.DIRECTORY,
+        member_manifest_ref=replace(
+            first, schema_id="insarforge:directory-member-manifest"
+        ),
+    )
+    layer = product.layers[0]
+    sign = replace(layer.sign.value, evidence_refs=(first, second))
+    return replace(
+        product,
+        assets=(source, directory),
+        provenance_ref=first,
+        layers=(replace(layer, sign=sv(sign)), *product.layers[1:]),
+    )
+
+
+@pytest.mark.parametrize("populated", [False, True])
+def test_s1_optional_nulls_and_present_values_roundtrip_without_io(
+    populated, monkeypatch
+):
+    import builtins
+    import io
+    import socket
+
+    product = s1_product_with_optional_values() if populated else populated_product()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("record codecs must not dereference assets or references")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(builtins, "open", forbidden)
+        patch.setattr(io, "open", forbidden)
+        patch.setattr(socket, "socket", forbidden)
+        value = product_to_manifest_value(product)
+        data = product_to_manifest_bytes(product)
+        assert product_from_manifest_value(value) == product
+        decoded = product_from_manifest_bytes(data)
+        assert decoded == product
+        assert product_to_manifest_bytes(decoded) == data
+    assert (
+        decoded.layers[0].sign.value.evidence_refs
+        == product.layers[0].sign.value.evidence_refs
+    )
+
+
+@pytest.mark.parametrize("via_bytes", [False, True], ids=["value", "bytes"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("assets", 0, "integrity"),
+        ("assets", 1, "member_manifest_ref"),
+        ("provenance_ref",),
+        ("assets", 0, "location"),
+        ("layers", 0, "sign", "value", "evidence_refs", 0),
+    ],
+    ids=["integrity", "member-ref", "provenance-ref", "location", "sign-evidence"],
+)
+def test_s1_optional_nested_fields_remain_exact(via_bytes, path):
+    value = json.loads(product_to_manifest_bytes(s1_product_with_optional_values()))
+    node = value["product"]
+    for key in path:
+        node = node[key]
+
+    def reject():
+        with pytest.raises(ValueError, match="fields"):
+            if via_bytes:
+                product_from_manifest_bytes(canonical_json_bytes(value))
+            else:
+                product_from_manifest_value(value)
+
+    for key in tuple(node):
+        saved = node.pop(key)
+        reject()
+        node[key] = saved
+    node["synthetic_extra"] = "synthetic:value"
+    reject()
+
+
+@pytest.mark.parametrize("asset_kind", ["file", "directory"])
+def test_s1_optional_decode_preserves_asset_kind_constraints(asset_kind):
+    value = json.loads(product_to_manifest_bytes(s1_product_with_optional_values()))
+    if asset_kind == "file":
+        value["product"]["assets"][1]["asset_kind"] = "file"
+    else:
+        value["product"]["assets"][0]["asset_kind"] = "directory"
+    with pytest.raises(ValueError):
+        product_from_manifest_value(value)

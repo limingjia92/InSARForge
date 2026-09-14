@@ -1,5 +1,12 @@
 import pytest
 
+from insarforge.contracts.errors import (
+    CapabilityUnavailableError,
+    ContractError,
+    OperationCapabilityUnsatisfiedError,
+    PluginAPIVersionMismatchError,
+    UnknownPluginError,
+)
 from insarforge.contracts.identity import (
     CapabilityId,
     PluginDescriptor,
@@ -7,11 +14,8 @@ from insarforge.contracts.identity import (
     PluginRef,
 )
 from insarforge.contracts.operations import OperationBinding, OperationRequirement
-from insarforge.core.operation_binding import (
-    OperationCapabilityUnsatisfiedError,
-    resolve_operation_binding,
-)
-from insarforge.core.registry import PluginRegistry, UnknownPluginError
+from insarforge.core.operation_binding import resolve_operation_binding
+from insarforge.core.registry import PluginRegistry
 
 
 def desc(kind, pid, caps=("cap:test",)):
@@ -70,3 +74,36 @@ def test_all_kinds_and_mismatch():
             ),
             PluginRef(PluginKind.QC, "q", 1),
         )
+
+
+@pytest.mark.parametrize("declared", [True, False])
+def test_binding_requested_api_and_declared_capability_only(declared):
+    descriptor = desc(
+        PluginKind.PROCESSOR,
+        "synthetic:plugin",
+        caps=("synthetic:needed",) if declared else (),
+    )
+    registry = PluginRegistry(1)
+
+    def factory():
+        pytest.fail("static binding resolution must not probe runtime availability")
+
+    registry.register(descriptor, factory)
+    registry.seal()
+    requirement = OperationRequirement(
+        "synthetic:operation", descriptor.kind, CapabilityId("synthetic:needed")
+    )
+    mismatched = OperationBinding(
+        requirement, PluginRef(descriptor.kind, descriptor.plugin_id, 2)
+    )
+    with pytest.raises(ContractError) as caught:
+        resolve_operation_binding(mismatched, registry)
+    assert type(caught.value) is PluginAPIVersionMismatchError
+    binding = OperationBinding(requirement, descriptor.ref)
+    if declared:
+        assert resolve_operation_binding(binding, registry) is descriptor
+    else:
+        with pytest.raises(ContractError) as caught:
+            resolve_operation_binding(binding, registry)
+        assert type(caught.value) is OperationCapabilityUnsatisfiedError
+        assert not isinstance(caught.value, CapabilityUnavailableError)

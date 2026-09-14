@@ -1,0 +1,234 @@
+"""S1 recognizable-secret rejection at existing record emission boundaries."""
+
+import builtins
+import io
+import socket
+from dataclasses import replace
+from types import MappingProxyType
+
+import pytest
+from test_product_models import populated_product
+
+from insarforge.contracts.errors import ContractError
+from insarforge.contracts.values import ArtifactRef
+from insarforge.products.assets import AssetIntegrity, AssetKind
+from insarforge.products.digests import product_manifest_digest
+from insarforge.products.directory_manifest import (
+    DirectoryMember,
+    DirectoryMemberManifest,
+)
+from insarforge.products.directory_manifest_serialization import (
+    directory_member_manifest_from_bytes,
+    directory_member_manifest_to_bytes,
+    directory_member_manifest_to_value,
+)
+from insarforge.products.serialization import (
+    canonical_json_bytes,
+    product_from_manifest_bytes,
+    product_to_manifest_bytes,
+    product_to_manifest_value,
+)
+
+MARKER = "SYNTHETIC_REVIEW_VALUE_S1"
+PRODUCT_EMITTERS = [
+    product_to_manifest_value,
+    product_to_manifest_bytes,
+    product_manifest_digest,
+]
+# Phase-3 recognizable keys, plus its case/punctuation/percent-encoded regressions.
+QUERY_KEYS = [
+    "password",
+    "passwd",
+    "token",
+    "accesstoken",
+    "refreshtoken",
+    "apikey",
+    "secret",
+    "clientsecret",
+    "privatekey",
+    "authorization",
+    "cookie",
+    "credentials",
+    "username",
+    "authentication",
+    "ACCESS-TOKEN",
+    "access%5Ftoken",
+    "api%2Dkey",
+    "client%5Fsecret",
+    "private-key",
+    # Additional forms already recognized by AssetLocation.
+    "auth",
+    "credential",
+    "signature",
+    "sig",
+    "x-amz-signature",
+    "x-amz-credential",
+    "x-amz-security-token",
+    "x-goog-signature",
+    "x-goog-credential",
+    "x-amz-algorithm",
+    "x-amz-date",
+    "x-amz-expires",
+]
+
+
+def assert_safe_rejection(emit, record):
+    with pytest.raises(ContractError) as caught:
+        emit(record)
+    assert type(caught.value) is ContractError
+    assert str(caught.value) == "PERSISTENCE_SECRET"
+    assert MARKER not in repr(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("emit", PRODUCT_EMITTERS)
+@pytest.mark.parametrize("key", QUERY_KEYS)
+def test_product_emitters_reject_recognized_credential_query_keys(emit, key):
+    url = f"https://example.invalid/record?{key}={MARKER}"
+    product = replace(
+        populated_product(),
+        extensions=MappingProxyType(
+            {"synthetic:data": (MappingProxyType({"url": url}),)}
+        ),
+    )
+    assert_safe_rejection(emit, product)
+    # Rejection never redacts or rewrites the source scientific data.
+    assert product.extensions["synthetic:data"][0]["url"] == url
+
+
+@pytest.mark.parametrize("emit", PRODUCT_EMITTERS)
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"synthetic-access-token": MARKER},
+        {"nested": [{"Client_Secret": MARKER}]},
+        f"https://user:{MARKER}@example.invalid/record",
+        f"diagnostic https://user:{MARKER}@example.invalid/record",
+        f"-----BEGIN PRIVATE KEY----- {MARKER}",
+        f"-----BEGIN RSA PRIVATE KEY----- {MARKER}",
+        f"-----BEGIN ENCRYPTED PRIVATE KEY----- {MARKER}",
+        f"https://example.invalid/record?field=1;access_token={MARKER}",
+        "https://example.invalid/record?access_token=",
+        f"https://example.invalid/record?X-AMZ-SIGNATURE={MARKER}",
+        {f"https://user:{MARKER}@example.invalid/record": "synthetic:value"},
+    ],
+)
+def test_product_emitters_reject_nested_keys_userinfo_and_private_key_markers(
+    emit, payload
+):
+    product = replace(populated_product(), extensions={"synthetic:data": payload})
+    assert_safe_rejection(emit, product)
+
+
+@pytest.mark.parametrize("emit", PRODUCT_EMITTERS)
+@pytest.mark.parametrize("surface", ["locator", "coordinate_reference", "integrity"])
+def test_persistence_guard_covers_declared_strings_beyond_extensions(emit, surface):
+    product = populated_product()
+    url = f"https://example.invalid/record?access_token={MARKER}"
+    if surface == "locator":
+        product = replace(
+            product,
+            provenance_ref=ArtifactRef("synthetic:r", "synthetic:s", 1, None, "m", url),
+        )
+    elif surface == "coordinate_reference":
+        geometry = product.geometries[0]
+        product = replace(
+            product,
+            geometries=(
+                replace(
+                    geometry,
+                    coordinate_reference=replace(
+                        geometry.coordinate_reference, value=url
+                    ),
+                ),
+            ),
+        )
+    else:
+        product = replace(
+            product,
+            assets=(
+                replace(
+                    product.assets[0],
+                    integrity=AssetIntegrity("synthetic:algorithm", url),
+                ),
+            ),
+        )
+    assert_safe_rejection(emit, product)
+
+
+@pytest.mark.parametrize(
+    "emit", [directory_member_manifest_to_value, directory_member_manifest_to_bytes]
+)
+@pytest.mark.parametrize(
+    "value",
+    [
+        f"https://example.invalid/record?access%5Ftoken={MARKER}",
+        f"https://user:{MARKER}@example.invalid/record",
+        f"-----BEGIN PRIVATE KEY----- {MARKER}",
+        f"https://example.invalid/record?x-amz-signature={MARKER}",
+    ],
+)
+def test_directory_emitters_reject_recognized_secret_material(emit, value):
+    manifest = DirectoryMemberManifest(
+        1,
+        (
+            DirectoryMember(
+                "synthetic-file",
+                AssetKind.FILE,
+                1,
+                AssetIntegrity("synthetic:algo", value),
+            ),
+        ),
+    )
+    assert_safe_rejection(emit, manifest)
+    assert manifest.members[0].integrity.digest == value
+
+
+@pytest.mark.parametrize(
+    "extensions",
+    [
+        7,
+        {"bare": [1, True, None, 1.0, "科学"]},
+        {"synthetic:data": {"url": "https://example.invalid/record?field=value"}},
+        {"a/b": "opaque", "org.example:field": "safe"},
+        {"text": "ordinary diagnostic text; token is a word, not a credential URL"},
+        {"sig": "an ordinary mapping key outside URL-query rules"},
+    ],
+)
+def test_safe_values_remain_byte_stable_without_namespace_decisions(extensions):
+    product = replace(populated_product(), extensions=extensions)
+    data = product_to_manifest_bytes(product)
+    assert canonical_json_bytes(product_to_manifest_value(product)) == data
+    decoded = product_from_manifest_bytes(data)
+    assert decoded == product
+    assert product_to_manifest_bytes(decoded) == data
+    assert product_manifest_digest(decoded) == product_manifest_digest(product)
+
+
+def test_emitters_have_no_io_or_environment_discovery(monkeypatch):
+    product = populated_product()
+    unsafe = replace(
+        product,
+        extensions={"synthetic:data": f"https://example.invalid/?token={MARKER}"},
+    )
+    manifest = DirectoryMemberManifest(
+        1, (DirectoryMember("synthetic-file", AssetKind.FILE, 1, None),)
+    )
+    expected = product_to_manifest_bytes(product)
+    directory_bytes = directory_member_manifest_to_bytes(manifest)
+    # Presence of a secret-like environment entry does not trigger discovery.
+    monkeypatch.setenv("SYNTHETIC_TOKEN", MARKER)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("record emission must not access files or networks")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(builtins, "open", forbidden)
+        patch.setattr(io, "open", forbidden)
+        patch.setattr(socket, "socket", forbidden)
+        for emit in PRODUCT_EMITTERS:
+            assert_safe_rejection(emit, unsafe)
+        assert product_to_manifest_bytes(product) == expected
+        assert directory_member_manifest_to_bytes(manifest) == directory_bytes
+        assert directory_member_manifest_from_bytes(directory_bytes) == manifest
