@@ -13,3 +13,4 @@ Baseline: `9c8b2ba1bb5b44e9aca274b0f29f3df692206fc9`. Freeze: `P4.0-FREEZE-1`, 2
 - [ADR-0006](0006-directory-member-manifest.md) — ACCEPTED
 - [ADR-0007](0007-datalayer-selector-dimensions-nodata.md) — ACCEPTED — DataLayer Selector, Dimensions, and NoData Semantics
 - [ADR-0008](0008-geometry-axes-and-dimension-alignment.md) — ACCEPTED — Geometry Axes and DataLayer Dimension Alignment
+- [ADR-0009](0009-grid-definition-and-geometry-reference.md) — ACCEPTED — Grid Definition and Geometry Reference Semantics
