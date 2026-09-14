@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 
-from insarforge.contracts.values import FrozenJSON
+from insarforge.contracts.values import FrozenJSON, freeze_json
 from insarforge.products.models import Product
 from insarforge.products.semantics import (
     PhysicalQuantity,
@@ -19,6 +19,8 @@ from insarforge.products.serialization import (
 DIGEST_ALGORITHM = "sha256"
 PRODUCT_SEMANTIC_MATERIAL_SCHEMA_ID = "insarforge:product-semantic-material"
 PRODUCT_SEMANTIC_MATERIAL_SCHEMA_VERSION = 1
+PRODUCT_CONTENT_DIGEST_ALGORITHM_REVISION = 1
+PRODUCT_CONTENT_DIGEST_DOMAIN_TAG = b"insarforge:product-content-digest:v1\x00"
 
 
 def sha256_hex(data: bytes) -> str:
@@ -52,20 +54,24 @@ def _value(value):
     if isinstance(value, SemanticValue):
         return _semantic(value)
     if isinstance(value, UnitSpec):
-        return {
-            "unit_id": value.unit_id,
-            "quantity_kind": value.quantity_kind,
-            "definition_ref": value.definition_ref,
-        }
+        return freeze_json(
+            {
+                "unit_id": value.unit_id,
+                "quantity_kind": value.quantity_kind,
+                "definition_ref": value.definition_ref,
+            }
+        )
     if isinstance(value, SignSpec):
-        return {
-            "convention_id": value.convention_id,
-            "observable": value.observable,
-            "positive_direction": value.positive_direction,
-            "minuend_ref": value.minuend_ref,
-            "subtrahend_ref": value.subtrahend_ref,
-            "evidence_semantic_digests": [_ref(r) for r in value.evidence_refs],
-        }
+        return freeze_json(
+            {
+                "convention_id": value.convention_id,
+                "observable": value.observable,
+                "positive_direction": value.positive_direction,
+                "minuend_ref": value.minuend_ref,
+                "subtrahend_ref": value.subtrahend_ref,
+                "evidence_semantic_digests": [_ref(r) for r in value.evidence_refs],
+            }
+        )
     if isinstance(value, PhysicalQuantity):
         return {
             "value": value.value,
@@ -108,6 +114,7 @@ def product_semantic_material(
                 "role": a.role,
                 "kind": a.kind.value,
                 "content_identity": asset_content_identities[a.asset_id],
+                "extensions": _value(a.extensions),
             }
             for a in product.assets
         ]
@@ -125,11 +132,13 @@ def product_semantic_material(
                             "size": a.size,
                             "unit": _semantic(a.unit),
                             "direction": _semantic(a.direction),
+                            "extensions": _value(a.extensions),
                         }
                         for a in g.axes
                     ],
                     "registration": _semantic(g.registration),
                     "coordinate_reference": _semantic(g.coordinate_reference),
+                    "extensions": _value(g.extensions),
                 }
             )
         layers = [
@@ -145,6 +154,7 @@ def product_semantic_material(
                 "unit": _semantic(layer.unit),
                 "sign": _semantic(layer.sign),
                 "geometry_ref": _semantic(layer.geometry_ref),
+                "extensions": _value(layer.extensions),
             }
             for layer in product.layers
         ]
@@ -161,6 +171,7 @@ def product_semantic_material(
                 "geometries": geometries,
                 "layers": layers,
             },
+            "extensions": _value(product.extensions),
         }
     except ValueError:
         return None
@@ -172,4 +183,10 @@ def product_content_digest(
     material = product_semantic_material(
         product=product, asset_content_identities=asset_content_identities
     )
-    return None if material is None else sha256_hex(canonical_json_bytes(material))
+    return (
+        None
+        if material is None
+        else sha256_hex(
+            PRODUCT_CONTENT_DIGEST_DOMAIN_TAG + canonical_json_bytes(material)
+        )
+    )

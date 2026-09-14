@@ -27,14 +27,30 @@ PRODUCT_MANIFEST_SCHEMA_ID = "insarforge:product-manifest"
 PRODUCT_MANIFEST_SCHEMA_VERSION = 1
 
 
+def _require_mapping_fields(value, expected, name):
+    if not isinstance(value, Mapping) or any(not isinstance(k, str) for k in value):
+        raise TypeError(name)
+    if set(value) != set(expected):
+        raise ValueError(f"{name} fields")
+    return value
+
+
+def _seq(value, name):
+    if not isinstance(value, (tuple, list)):
+        raise TypeError(name)
+    return value
+
+
 def _plain(v):
-    if isinstance(v, dict):
-        return {k: _plain(x) for k, x in v.items()}
-    if hasattr(v, "items"):
+    if isinstance(v, Mapping):
+        if any(not isinstance(k, str) for k in v):
+            raise TypeError("keys")
         return {k: _plain(x) for k, x in v.items()}
     if isinstance(v, (tuple, list)):
         return [_plain(x) for x in v]
-    return v
+    if isinstance(v, (str, int, float, bool)) or v is None:
+        return v
+    raise TypeError("unsupported JSON value")
 
 
 def canonical_json_bytes(value: FrozenJSON) -> bytes:
@@ -214,14 +230,22 @@ def product_to_manifest_bytes(product):
 
 
 def _sv(v, typ=None):
-    if not isinstance(v, dict):
+    if not isinstance(v, Mapping):
         raise TypeError("semantic")
+    if set(v) != {"status", "value", "reason_code", "evidence_refs"}:
+        raise ValueError("semantic fields")
     status = SemanticStatus(v["status"])
     value = v["value"]
     if status is not SemanticStatus.KNOWN:
-        value = None
+        if value is not None:
+            raise ValueError("non-null semantic value")
     elif typ:
-        value = typ(value)
+        if typ is str:
+            if not isinstance(value, str):
+                raise TypeError("semantic type")
+            value = value
+        else:
+            value = _d(value, typ)
     return SemanticValue(
         status,
         value,
@@ -231,12 +255,68 @@ def _sv(v, typ=None):
 
 
 def _d(v, typ):
+    fields = {
+        ArtifactRef: {
+            "record_id",
+            "schema_id",
+            "schema_version",
+            "semantic_digest",
+            "manifest_digest",
+            "locator",
+        },
+        PluginRef: {"kind", "plugin_id", "api_version"},
+        UnitSpec: {"unit_id", "quantity_kind", "definition_ref"},
+        SignSpec: {
+            "convention_id",
+            "observable",
+            "positive_direction",
+            "minuend_ref",
+            "subtrahend_ref",
+            "evidence_refs",
+        },
+        AssetLocation: {"kind", "value", "anchor"},
+        NativeAsset: {
+            "asset_id",
+            "role",
+            "kind",
+            "location",
+            "media_type",
+            "size_bytes",
+            "checksum_algorithm",
+            "checksum",
+            "extensions",
+        },
+        AxisDescriptor: {"axis_id", "role", "size", "unit", "direction", "extensions"},
+        GeometryDescriptor: {
+            "geometry_id",
+            "domain_id",
+            "shape",
+            "axes",
+            "registration",
+            "coordinate_reference",
+            "extensions",
+        },
+        LayerSelector: {"selector_kind", "parameters"},
+        DataLayer: {
+            "layer_id",
+            "role",
+            "asset_id",
+            "selector",
+            "quantity_kind",
+            "unit",
+            "sign",
+            "geometry_ref",
+            "extensions",
+        },
+    }
+    if typ in fields:
+        _require_mapping_fields(v, fields[typ], typ.__name__)
     if typ is ArtifactRef:
-        return ArtifactRef(**v)
+        return ArtifactRef(**dict(v))
     if typ is PluginRef:
         return PluginRef(PluginKind(v["kind"]), v["plugin_id"], v["api_version"])
     if typ is UnitSpec:
-        return UnitSpec(**v)
+        return UnitSpec(**dict(v))
     if typ is SignSpec:
         return SignSpec(
             v["convention_id"],
@@ -284,8 +364,8 @@ def _d(v, typ):
         return GeometryDescriptor(
             v["geometry_id"],
             v["domain_id"],
-            tuple(v["shape"]),
-            tuple(_d(a, AxisDescriptor) for a in v["axes"]),
+            tuple(_seq(v["shape"], "shape")),
+            tuple(_d(a, AxisDescriptor) for a in _seq(v["axes"], "axes")),
             _sv(v["registration"], str),
             _sv(v["coordinate_reference"], str),
             v["extensions"],
@@ -311,6 +391,8 @@ def product_from_manifest_value(value):
         not isinstance(value, Mapping)
         or set(value) != {"schema_id", "schema_version", "product"}
         or value["schema_id"] != PRODUCT_MANIFEST_SCHEMA_ID
+        or not isinstance(value.get("schema_version"), int)
+        or isinstance(value.get("schema_version"), bool)
         or value["schema_version"] != 1
     ):
         raise ValueError("envelope")
@@ -331,6 +413,14 @@ def product_from_manifest_value(value):
         "extensions",
     }:
         raise ValueError("product fields")
+    if isinstance(p["schema_version"], bool) or not isinstance(
+        p["schema_version"], int
+    ):
+        raise ValueError("version")
+    if not isinstance(value["schema_version"], int) or isinstance(
+        value["schema_version"], bool
+    ):
+        raise ValueError("version")
     return Product(
         p["product_id"],
         p["schema_version"],
@@ -340,10 +430,10 @@ def product_from_manifest_value(value):
         _d(p["producer"], PluginRef),
         p["producer_implementation_version"],
         _d(p["provenance_ref"], ArtifactRef) if p["provenance_ref"] else None,
-        tuple(_d(x, ArtifactRef) for x in p["lineage"]),
-        tuple(_d(x, NativeAsset) for x in p["assets"]),
-        tuple(_d(x, GeometryDescriptor) for x in p["geometries"]),
-        tuple(_d(x, DataLayer) for x in p["layers"]),
+        tuple(_d(x, ArtifactRef) for x in _seq(p["lineage"], "lineage")),
+        tuple(_d(x, NativeAsset) for x in _seq(p["assets"], "assets")),
+        tuple(_d(x, GeometryDescriptor) for x in _seq(p["geometries"], "geometries")),
+        tuple(_d(x, DataLayer) for x in _seq(p["layers"], "layers")),
         p["extensions"],
     )
 
