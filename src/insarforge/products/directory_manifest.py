@@ -1,5 +1,7 @@
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
+import unicodedata
+
 from .assets import AssetIntegrity, AssetKind
 
 

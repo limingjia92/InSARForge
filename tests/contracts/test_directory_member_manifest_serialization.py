@@ -1,6 +1,12 @@
 from insarforge.products.assets import AssetKind
-from insarforge.products.directory_manifest import *
-from insarforge.products.directory_manifest_serialization import *
+from insarforge.products.directory_manifest import (
+    DirectoryMember,
+    DirectoryMemberManifest,
+)
+from insarforge.products.directory_manifest_serialization import (
+    directory_member_manifest_from_bytes,
+    directory_member_manifest_to_bytes,
+)
 
 
 def test_roundtrip():
