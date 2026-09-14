@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from insarforge.contracts._extensions import _freeze_extensions
 from insarforge.contracts.identity import PluginRef
 from insarforge.contracts.values import (
     ArtifactRef,
     FrozenJSON,
-    freeze_json,
     validate_identifier,
 )
 from insarforge.products.assets import NativeAsset
@@ -91,7 +91,7 @@ class ProductDraft:
             ("layers", layers),
         ):
             object.__setattr__(self, name, value)
-        object.__setattr__(self, "extensions", freeze_json(self.extensions))
+        object.__setattr__(self, "extensions", _freeze_extensions(self.extensions))
 
 
 @dataclass(frozen=True)
@@ -141,4 +141,4 @@ class Product:
             ("layers", layers),
         ):
             object.__setattr__(self, name, value)
-        object.__setattr__(self, "extensions", freeze_json(self.extensions))
+        object.__setattr__(self, "extensions", _freeze_extensions(self.extensions))

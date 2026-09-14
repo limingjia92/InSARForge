@@ -188,15 +188,17 @@ def test_directory_emitters_reject_recognized_secret_material(emit, value):
 @pytest.mark.parametrize(
     "extensions",
     [
-        7,
-        {"bare": [1, True, None, 1.0, "科学"]},
+        {"test-owner:value": 7},
+        {"test-owner:bare": [1, True, None, 1.0, "科学"]},
         {"synthetic:data": {"url": "https://example.invalid/record?field=value"}},
-        {"a/b": "opaque", "org.example:field": "safe"},
-        {"text": "ordinary diagnostic text; token is a word, not a credential URL"},
-        {"sig": "an ordinary mapping key outside URL-query rules"},
+        {"test-owner:a/b": "opaque", "org.example:field": "safe"},
+        {
+            "test-owner:text": "ordinary diagnostic text; token is a word, not a credential URL"
+        },
+        {"test-owner:sig": "an ordinary mapping key outside URL-query rules"},
     ],
 )
-def test_safe_values_remain_byte_stable_without_namespace_decisions(extensions):
+def test_safe_namespaced_values_remain_byte_stable(extensions):
     product = replace(populated_product(), extensions=extensions)
     data = product_to_manifest_bytes(product)
     assert canonical_json_bytes(product_to_manifest_value(product)) == data

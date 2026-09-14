@@ -459,3 +459,40 @@ def test_geometry_evidence_ignores_persistence_identity(field):
     assert content(with_geometry(product, **{field: first})) == content(
         with_geometry(product, **{field: second})
     )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"vendor-x:other": {"values": [1, 2]}},
+        {"vendor-x:data": {"values": [1, 3]}},
+        {"Vendor-x:data": {"values": [1, 2]}},
+        {"vendor-x:data": {"values": [2, 1]}},
+    ],
+)
+def test_complete_extensions_are_semantic(changed):
+    product = replace(
+        populated_product(), extensions={"vendor-x:data": {"values": [1, 2]}}
+    )
+    assert content(product) is not None
+    assert content(product) != content(replace(product, extensions=changed))
+
+
+def test_extension_mapping_order_and_empty_determinism():
+    product = populated_product()
+    first = replace(
+        product,
+        extensions={"future-tool:data": {"z": [1, 2], "a": 1}, "vendor:flag": True},
+    )
+    second = replace(
+        product,
+        extensions={"vendor:flag": True, "future-tool:data": {"a": 1, "z": [1, 2]}},
+    )
+    assert content(first) is not None
+    assert content(first) == content(second)
+    assert material(first)["extensions"] == {
+        "future-tool:data": {"z": [1, 2], "a": 1},
+        "vendor:flag": True,
+    }
+    assert content(product) is not None
+    assert content(product) == content(replace(product, extensions={}))

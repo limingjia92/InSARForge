@@ -89,7 +89,7 @@ def test_draft_and_cross_references():
 
 def test_immutability_and_product():
     src = []
-    d = draft(lineage=tuple(src), extensions={"x": [1]})
+    d = draft(lineage=tuple(src), extensions={"test-owner:x": [1]})
     assert isinstance(d.lineage, tuple)
     p = Product(
         "product:x",
@@ -206,4 +206,76 @@ def populated_product():
             replace(source, layer_id="mask:b"),
         ),
         {},
+    )
+
+
+@pytest.mark.parametrize("builder", [draft, populated_product])
+@pytest.mark.parametrize(
+    "extensions",
+    [
+        {},
+        {"vendor-x:flag": True},
+        {"future-tool:data": {"values": [1, 2]}},
+        {"insarforge:test-value": 1},
+        {"Vendor:flag": 1, "vendor:flag": 2},
+    ],
+)
+def test_extension_namespace_acceptance(builder, extensions):
+    from insarforge.contracts.values import freeze_json
+
+    stored = replace(builder(), extensions=extensions).extensions
+    assert stored == freeze_json(extensions)
+    assert list(stored) == list(extensions)
+
+
+@pytest.mark.parametrize("builder", [draft, populated_product])
+@pytest.mark.parametrize("key", ["flag", "metadata", ":flag", "vendor:", "a:b:c"])
+def test_extension_namespace_rejection(builder, key):
+    with pytest.raises(ValueError):
+        replace(builder(), extensions={key: 1})
+
+
+@pytest.mark.parametrize("builder", [draft, populated_product])
+@pytest.mark.parametrize("extensions", [None, [], (), "text", 1])
+def test_extensions_require_mapping(builder, extensions):
+    with pytest.raises(TypeError):
+        replace(builder(), extensions=extensions)
+
+
+@pytest.mark.parametrize("builder", [draft, populated_product])
+@pytest.mark.parametrize("readonly", [False, True])
+def test_extension_snapshot_owns_all_layers(builder, readonly):
+    from types import MappingProxyType
+
+    source = {"vendor-x:data": {"values": [1, 2]}}
+    supplied = MappingProxyType(source) if readonly else source
+    stored = replace(builder(), extensions=supplied).extensions
+    source["vendor-x:extra"] = True
+    source["vendor-x:data"]["extra"] = 3
+    source["vendor-x:data"]["values"].append(3)
+    assert stored == {"vendor-x:data": {"values": (1, 2)}}
+    with pytest.raises(TypeError):
+        stored["vendor-x:extra"] = True
+    with pytest.raises(TypeError):
+        stored["vendor-x:data"]["extra"] = 3
+    with pytest.raises(TypeError):
+        stored["vendor-x:data"]["values"][0] = 3
+
+
+def test_product_and_draft_field_lists_preserve_current_envelope():
+    common = (
+        "schema_version",
+        "product_kind",
+        "profile_id",
+        "profile_version",
+    )
+    tail = ("lineage", "assets", "geometries", "layers", "extensions")
+    assert tuple(f.name for f in fields(ProductDraft)) == common + tail
+    assert tuple(f.name for f in fields(Product)) == (
+        "product_id",
+        *common,
+        "producer",
+        "producer_implementation_version",
+        "provenance_ref",
+        *tail,
     )

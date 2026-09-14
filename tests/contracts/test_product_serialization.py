@@ -615,3 +615,94 @@ def test_s1_optional_decode_preserves_asset_kind_constraints(asset_kind):
         value["product"]["assets"][0]["asset_kind"] = "directory"
     with pytest.raises(ValueError):
         product_from_manifest_value(value)
+
+
+@pytest.mark.parametrize(
+    "extensions",
+    [
+        {},
+        {
+            "future-tool:data": {
+                "values": [None, True, 1, 1.5, "text", {"ordinary key": 2}]
+            }
+        },
+        {"Vendor:flag": 1, "vendor:flag": 2},
+        {"insarforge:test-value": 1},
+    ],
+)
+def test_namespaced_extensions_roundtrip(extensions):
+    product = replace(populated_product(), extensions=extensions)
+    value = product_to_manifest_value(product)
+    assert list(value["product"])[-1] == "extensions"
+    assert value["product"]["extensions"] == product.extensions
+    assert product_from_manifest_value(value) == product
+    data = product_to_manifest_bytes(product)
+    decoded = product_from_manifest_bytes(data)
+    assert decoded == product
+    assert product_to_manifest_bytes(decoded) == data
+
+
+@pytest.mark.parametrize(
+    "extensions,error",
+    [
+        (None, TypeError),
+        ([], TypeError),
+        ((), TypeError),
+        ("text", TypeError),
+        (1, TypeError),
+        ({"flag": 1}, ValueError),
+        ({"metadata": 1}, ValueError),
+        ({":flag": 1}, ValueError),
+        ({"vendor:": 1}, ValueError),
+        ({"a:b:c": 1}, ValueError),
+    ],
+)
+def test_extension_decode_rejects_invalid_shape_and_keys(extensions, error):
+    value = json.loads(product_to_manifest_bytes(populated_product()))
+    value["product"]["extensions"] = extensions
+    with pytest.raises(error):
+        product_from_manifest_value(value)
+    with pytest.raises(error):
+        product_from_manifest_bytes(json.dumps(value))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"vendor:data":{"x":1,"x":2}}',
+        '{"vendor:data":NaN}',
+        '{"vendor:data":Infinity}',
+        '{"vendor:data":1e999}',
+    ],
+)
+def test_extension_json_remains_strict(payload):
+    data = product_to_manifest_bytes(populated_product()).decode()
+    assert '"extensions":{}' in data
+    with pytest.raises(ValueError):
+        product_from_manifest_bytes(
+            data.replace('"extensions":{}', '"extensions":' + payload)
+        )
+
+
+@pytest.mark.parametrize("change", ["missing", "extra"])
+def test_extension_migration_preserves_exact_product_fields(change):
+    value = json.loads(product_to_manifest_bytes(populated_product()))
+    if change == "missing":
+        del value["product"]["extensions"]
+    else:
+        value["product"]["unexpected"] = {}
+    with pytest.raises(ValueError, match="product fields"):
+        product_from_manifest_value(value)
+
+
+@pytest.mark.parametrize("key", ["vendor-x:secret", "vendor-x:data"])
+@pytest.mark.parametrize("emit", [product_to_manifest_value, product_to_manifest_bytes])
+def test_namespaced_extensions_do_not_bypass_safe_persistence(key, emit):
+    from insarforge.contracts.errors import ContractError
+
+    product = replace(
+        populated_product(),
+        extensions={key: "https://example.invalid/?token=synthetic-marker"},
+    )
+    with pytest.raises(ContractError, match="PERSISTENCE_SECRET"):
+        emit(product)
