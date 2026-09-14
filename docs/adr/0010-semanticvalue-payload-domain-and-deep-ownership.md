@@ -27,11 +27,22 @@ accepted contract. This ADR settles that choice with explicit caller freezing
 and type preservation. It clarifies how §6.4 applies to this generic envelope;
 dedicated container-owning contracts retain their own freezing rules.
 
+**ADR0010-R1 — FrozenJSON Defensive Snapshot Clarification:** B3b-S2a stopped
+with BLOCKED_SCOPE and zero repository edits because canonical FrozenJSON
+mappings and caller-backed MappingProxyType views share a runtime representation.
+Validation of type and current contents cannot prove independent ownership.
+R1 clarifies the validation-before-snapshot boundary below; this ADR's number,
+title and Accepted status remain unchanged. No implementation is performed.
+
 ## Decision
 
 **SemanticValue is a semantic-state envelope around an ownership-safe payload.**
 
 An accepted payload must already belong to the supported domain below.
+For generic FrozenJSON immutable-view input, domain membership is validated
+first and independent ownership is then enforced by the canonical snapshot
+rule below. Domain validation is not a claim that a read-only view already owns
+its backing storage.
 SemanticValue owns its envelope; the payload contract owns its payload state.
 All retained state contributing to semantics must remain stable after
 construction, including when a caller mutates an original input collection.
@@ -64,7 +75,7 @@ SemanticValue[T](
 | Immutable scalars | `str`, `int`, finite `float`, and `bool`, subject to the typed field's validators. Preserve their values and logical types. |
 | Immutable enums and value objects | Their applicable contract guarantees ownership safety of all semantic state; enum membership alone does not establish that guarantee. |
 | Dedicated immutable InSARForge contract objects | Their own public contract owns/freezes nested state. Current Phase 4 examples include UnitSpec, SignSpec, NoDataSpec, GridDefinition, ArtifactRef and PhysicalQuantity. Product/value contracts qualify only when they meet the same deep-ownership rule. |
-| Existing FrozenJSON values | Values established through the canonical FrozenJSON / `freeze_json` contract, with its recursive ownership and value constraints intact. |
+| FrozenJSON values and accepted immutable views | Existing FrozenJSON value constraints apply recursively. Validate the immutable-view domain before an independent canonical snapshot establishes retained ownership; provenance from `freeze_json` is not required. |
 | Immutable tuples | Every recursively contained item belongs to this ownership-safe domain. An empty tuple is valid at the generic layer. |
 
 This is an ownership domain, not permission to bypass field-specific type
@@ -109,20 +120,93 @@ Its handling of nested nulls remains unchanged. Top-level `value=None` still
 cannot be KNOWN, including for `SemanticValue[FrozenJSON]`; the existing status
 rule takes precedence. Nested null does not create an additional semantic state.
 
-FrozenJSON is a structural type alias, not an ownership certificate. Merely
-annotating a mutable Mapping as FrozenJSON, or placing a read-only proxy over a
-caller-owned dictionary, does not satisfy the guarantee. Ownership validation
-must cover that aliasing case. Any defensive snapshot needed for an accepted
-FrozenJSON representation must use the existing canonical `freeze_json`
-mechanism and preserve the logical FrozenJSON type. It must not become a route
-for accepting raw mutable generic payloads or a second JSON-freezing algorithm.
-This ADR does not change FrozenJSON itself or its existing owner contracts,
-including GridDefinition's explicit parameter freezing.
+#### R1: immutable-view validation and defensive snapshot
+
+FrozenJSON is a structural type alias, not an ownership certificate. A read-only
+interface does not establish ownership. In particular:
+
+```python
+source = {"a": 1}
+view = MappingProxyType(source)
+# view["a"] = 2 is forbidden, but:
+source["a"] = 2
+# view["a"] now observes 2.
+```
+
+Canonical `freeze_json` object mappings and these caller-backed views have the
+same runtime representation. SemanticValue must not retain an accepted
+FrozenJSON mapping/view by alias when mutation of hidden backing state could
+change the stored semantic value after construction.
+
+The mandatory order for the generic FrozenJSON structured-data path is:
+
+```text
+validate the complete input's ownership-domain structure
+    -> reject any prohibited raw mutable node
+    -> create an independent canonical snapshot with existing freeze_json
+    -> store the snapshot
+```
+
+This path accepts the existing FrozenJSON value language in immutable-view
+form: immutable JSON scalar values, tuples of recursively valid FrozenJSON
+values, and canonical/read-only mapping representations such as MappingProxyType
+with string keys and recursively valid FrozenJSON values. It does not accept
+arbitrary objects merely because they expose a Mapping interface. The existing
+scalar, key, finite-number and nested-null rules remain binding; no second JSON
+value language is defined.
+
+Validation must reject a raw `dict`, `list`, `set`, `bytearray`, or equivalent
+unsupported mutable node anywhere in the input tree, before any snapshot is
+created. For example, a KNOWN payload `{"a": 1}` remains invalid, as does
+`MappingProxyType({"x": [1, 2, 3]})`: its nested list is prohibited even though
+`freeze_json` could convert it to a tuple. Wrapping a raw mutable node in a
+read-only mapping or tuple does not make it valid. Do not freeze first and
+validate later. Raw mutable nodes raise `TypeError`; nonfinite floats raise
+`ValueError`. Status/value consistency and reason rules are unchanged.
+
+After the entire input passes this pre-validation, SemanticValue is authorized
+and required to establish independent ownership of accepted FrozenJSON
+structured state using the existing canonical `freeze_json` mechanism.
+This is ownership enforcement within the logical FrozenJSON domain. It is not
+acceptance or coercion of unsupported raw mutable `T`. The prohibition on
+`dict -> mappingproxy` and `list -> tuple` as implicit payload acceptance remains
+unchanged; an accepted FrozenJSON immutable representation becoming an
+independently owned canonical FrozenJSON representation preserves its logical
+payload domain.
+
+SemanticValue is not required to determine whether a MappingProxyType originally
+came from `freeze_json`. Such runtime provenance is not reliably distinguishable;
+the independent canonical snapshot makes provenance irrelevant. Do not use
+object identity, provenance, reference-count or similar heuristics as ownership
+proof. Do not trust the read-only facade as inherently deep-owned.
+
+No nominal FrozenJSON, FrozenJSONObject or FrozenArray class, marker Protocol,
+or wrapper hierarchy is required or introduced for P4.1B. A nominal
+representation remains a future design option only if later requirements need
+type/provenance distinction; it is not this clarification's implementation
+requirement. Existing `freeze_json` remains the single canonical generic JSON
+freezing/snapshot mechanism. A private pre-validation helper followed by that
+existing function is permitted; a competing freezer is not.
+
+This clarification applies to generic FrozenJSON structured state. It does not
+change FrozenJSON's existing representation, GridDefinition's explicit parameter
+freezing, or other typed owners' contracts. SemanticValue must not snapshot or
+reconstruct UnitSpec, SignSpec, ArtifactRef, NoDataSpec, GridDefinition or
+arbitrary dataclasses under this generic JSON rule unless their own contract
+explicitly requires it. Compositional ownership remains: SemanticValue owns the
+envelope, and each typed payload contract owns its nested state. No B1/B2,
+Product, DataLayer or Geometry redesign is required.
 
 Tuples are validated recursively: `("a", 1)` is ownership-safe;
 `("a", mutable_list)` is not. A tuple of supported typed contract values retains
 those values' types and relies compositionally on their contracts. Tuple order
 is preserved; no set semantics or implicit mutable-member conversion is added.
+A tuple containing an accepted FrozenJSON read-only mapping must have that
+structured state independently snapshotted after complete input validation.
+This applies recursively, preserving tuple order and logical member types;
+typed contract members retain their own compositional ownership boundary and
+must not be passed through a generic JSON conversion. Any nested list, dict,
+set, bytearray or other unsupported mutable node still causes rejection.
 
 ### Finite floats
 
@@ -208,6 +292,10 @@ to ContractError is introduced.
 | Trust only the frozen outer dataclass | Nested caller-owned semantic state remains mutable. |
 | Make every payload FrozenJSON | Destroys typed domain contracts such as UnitSpec, ArtifactRef and GridDefinition. |
 | Introduce a universal SemanticPayload base class | Adds unnecessary inheritance coupling; current structural ownership responsibilities need no universal hierarchy. |
+| Trust every mappingproxy directly | Read-only access is not ownership; another reference can mutate the backing mapping. |
+| Introduce nominal FrozenJSON wrappers now | Unnecessary P4.1B migration cost for GridDefinition, serialization, digests, extensions and existing FrozenJSON users; validation followed by canonical snapshot addresses aliasing. |
+| Call freeze_json before validating input | Silently legitimizes prohibited raw mutable nodes, including nested lists inside mappingproxy views. |
+| Reject all mapping-based FrozenJSON payloads | Contradicts the intentional support for canonical FrozenJSON structured semantic data. |
 
 ## Consequences
 
@@ -286,6 +374,17 @@ Existing evidence handling is a regression obligation, not a claim that the
 baseline lacks tuple copying. No implementation or test change is authorized
 by this documentation task. Extension remediation remains separate.
 
+**R1 retry consequence:** a separately authorized B3b-S2a retry can implement
+recursive ownership-domain pre-validation, rejection of every raw mutable node,
+then defensive canonical snapshots of accepted FrozenJSON structured state,
+alongside existing evidence_refs defensive tuple ownership. This explicitly
+resolves the prior validation-only snapshot blocker. The retry must not
+auto-freeze raw dict/list input, deepcopy arbitrary objects, introduce nominal
+FrozenJSON wrappers, or change B1/B2 public contracts. It must cover both live
+mappingproxy backing-alias isolation and rejection of mutable nodes nested in
+read-only views or tuples. This R1 task does not retry S2a or alter any
+extension, Product, binding or P4.2 decision.
+
 ### Remaining REQUIRED finding ledger
 
 | Accounting before ADR 0010 implementation | Count / disposition |
@@ -301,8 +400,12 @@ ADR 0010 resolves D-SEMANTIC's architecture choices. B3-REQ-21 remains open
 until implementation and validation; any later metadata dependency remains
 conditional on the Product decision. The remaining implementation count stays
 13. No finding is closed merely because this ADR is accepted.
+ADR0010-R1 clarifies architecture only: B3-REQ-21 remains **OPEN** for
+implementation, and the blocked S2a attempt and R1 documentation close zero
+implementation findings. The remaining REQUIRED implementation count is 13.
 
 Unresolved ADR 0010 decision items: **None**.
+Unresolved ADR0010-R1 clarification items: **None**.
 
 ## Evidence basis
 
@@ -314,3 +417,8 @@ External B3b.0 evidence is under
 snapshot policy is superseded by this accepted domain decision, not by current
 code behavior. Review records for this docs-only task are outside the repository
 under `InSARForge_dev_notes/phase4/P4.1B/R2/ADR0010/`.
+R1's blocker evidence is under `InSARForge_dev_notes/phase4/P4.1B/R2/B3b_S2a/`,
+especially `S2a_summary.md`, `finding_scope.md`,
+`semanticvalue_usage_inventory.md`, `ownership_rule_matrix.md`, and
+`remaining_finding_ledger.md`. R1 review records are outside the repository
+under `InSARForge_dev_notes/phase4/P4.1B/R2/ADR0010_R1/`.
