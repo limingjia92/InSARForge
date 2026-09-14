@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import MutableMapping, MutableSequence, MutableSet
+from dataclasses import dataclass, is_dataclass
 from enum import Enum
+from types import MappingProxyType
 from typing import Generic, TypeVar
 
-from insarforge.contracts.values import ArtifactRef, validate_identifier
+from insarforge.contracts.values import ArtifactRef, freeze_json, validate_identifier
 
 
 class SemanticStatus(Enum):
@@ -20,6 +22,61 @@ T = TypeVar("T")
 def _reason(x):
     if x is not None and (not isinstance(x, str) or not x or x != x.strip()):
         raise ValueError("reason_code")
+
+
+def _validate_payload(value, *, json_only=False):
+    """Validate ownership domain completely, without converting any input.
+
+    Only the existing immutable value-contract modules qualify compositionally;
+    frozen external dataclasses and arbitrary Mapping facades do not qualify.
+    Within a JSON object, members must also belong to the FrozenJSON language.
+    """
+    if isinstance(value, (MutableMapping, MutableSequence, MutableSet, bytearray)):
+        raise TypeError("mutable semantic payload")
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("semantic payload float must be finite")
+        return
+    if isinstance(value, tuple):
+        for item in value:
+            _validate_payload(item, json_only=json_only)
+        return
+    if isinstance(value, MappingProxyType):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError("mapping keys must be strings")
+            _validate_payload(item, json_only=True)
+        return
+    if not json_only:
+        if isinstance(value, Enum):
+            return
+        cls = type(value)
+        if (
+            cls.__module__
+            in {
+                "insarforge.contracts.values",
+                "insarforge.contracts.identity",
+                "insarforge.products.semantics",
+                "insarforge.products.nodata",
+                "insarforge.products.grid",
+            }
+            and is_dataclass(value)
+            and cls.__dataclass_params__.frozen
+        ):
+            # These contracts own their nested state; do not reconstruct them.
+            return
+    raise TypeError(f"unsupported semantic payload: {type(value).__name__}")
+
+
+def _snapshot_payload(value):
+    """Own validated JSON views, preserving tuple and typed member semantics."""
+    if isinstance(value, MappingProxyType):
+        return freeze_json(value)
+    if isinstance(value, tuple):
+        return tuple(_snapshot_payload(item) for item in value)
+    return value
 
 
 @dataclass(frozen=True)
@@ -45,6 +102,10 @@ class SemanticValue(Generic[T]):
         ev = tuple(self.evidence_refs)
         if any(not isinstance(x, ArtifactRef) for x in ev):
             raise TypeError("evidence_refs")
+        if self.status is SemanticStatus.KNOWN:
+            # R1: validate the ENTIRE candidate before creating any snapshot.
+            _validate_payload(self.value)
+            object.__setattr__(self, "value", _snapshot_payload(self.value))
         object.__setattr__(self, "evidence_refs", ev)
 
 

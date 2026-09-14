@@ -10,7 +10,7 @@ from insarforge.contracts.records import (
     QCReport,
     QCStatus,
 )
-from insarforge.contracts.values import ArtifactRef
+from insarforge.contracts.values import ArtifactRef, freeze_json
 from insarforge.products.semantics import (
     SemanticStatus,
     SemanticValue,
@@ -35,7 +35,7 @@ def test_records():
         1,
         r,
         PluginRef(PluginKind.MISSION, "m", 1),
-        {"x": SemanticValue(SemanticStatus.KNOWN, {"a": [1]}, None, [])},
+        {"x": SemanticValue(SemanticStatus.KNOWN, freeze_json({"a": [1]}), None, [])},
         [],
         {},
     )
