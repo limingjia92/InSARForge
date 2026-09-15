@@ -12,7 +12,82 @@ from insarforge.contracts.values import (
 from insarforge.products.assets import NativeAsset
 from insarforge.products.geometry import GeometryDescriptor
 from insarforge.products.layers import DataLayer
-from insarforge.products.semantics import SemanticStatus
+from insarforge.products.semantics import SemanticStatus, SemanticValue
+
+
+def _identity_value(value: SemanticValue[str], name: str) -> None:
+    """Validate supplied ADR0012 identity availability without resolving it."""
+    if not isinstance(value, SemanticValue):
+        raise TypeError(name)
+    if value.status is SemanticStatus.KNOWN:
+        if type(value.value) is not str:
+            raise TypeError(name)
+        if not value.value or value.value != value.value.strip():
+            raise ValueError(name)
+    elif value.status is SemanticStatus.UNKNOWN:
+        if (
+            value.value is not None
+            or not isinstance(value.reason_code, str)
+            or not value.reason_code
+            or value.reason_code != value.reason_code.strip()
+        ):
+            raise ValueError(name)
+    else:
+        raise ValueError(name)
+
+
+@dataclass(frozen=True)
+class ProducerRef:
+    """Supplied software and execution identities; no registry or runtime lookup."""
+
+    plugin: PluginRef
+    implementation_version: str
+    implementation_identity_digest: SemanticValue[str]
+    execution_identity_digest: SemanticValue[str]
+
+    def __post_init__(self):
+        if not isinstance(self.plugin, PluginRef):
+            raise TypeError("plugin")
+        if type(self.implementation_version) is not str:
+            raise TypeError("implementation_version")
+        if (
+            not self.implementation_version
+            or self.implementation_version != self.implementation_version.strip()
+        ):
+            raise ValueError("implementation_version")
+        _identity_value(
+            self.implementation_identity_digest, "implementation_identity_digest"
+        )
+        _identity_value(self.execution_identity_digest, "execution_identity_digest")
+
+
+@dataclass(frozen=True)
+class ProductionRef:
+    """Static traceability of an actual production, including weak identity."""
+
+    task_fingerprint: SemanticValue[str]
+    output_port: str
+    attempt_id: str
+
+    def __post_init__(self):
+        _identity_value(self.task_fingerprint, "task_fingerprint")
+        validate_identifier(self.output_port)
+        validate_identifier(self.attempt_id)
+
+
+@dataclass(frozen=True)
+class LineageEntry:
+    """An input role and its unresolved artifact; content identity may be absent."""
+
+    role: str
+    artifact: ArtifactRef
+
+    def __post_init__(self):
+        if type(self.role) is not str:
+            raise TypeError("role")
+        validate_identifier(self.role)
+        if not isinstance(self.artifact, ArtifactRef):
+            raise TypeError("artifact")
 
 
 def _version(value):
