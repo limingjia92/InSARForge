@@ -184,6 +184,7 @@ class ProbeContext(Protocol):
     @property
     def allocated_resources(self) -> ResourceAllocation: ...
 
+
 class PreparedExecution(Protocol):
     @property
     def semantic_execution_identity(self) -> SemanticValue[FrozenJSON]: ...
@@ -209,12 +210,14 @@ class InputCodec(Protocol):
         schema: RecordSchemaRef,
     ) -> ResolvedInput: ...
 
+
 class OutputCodec(Protocol):
     def encode(
         self,
         value: OutputRecord,
         schema: RecordSchemaRef,
     ) -> ArtifactDraft: ...
+
 
 class PortValidator(Protocol):
     def validate(
