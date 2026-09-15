@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
 
+from insarforge.contracts._extensions import _freeze_extensions
 from insarforge.contracts.identity import PluginKind, PluginRef
 from insarforge.contracts.values import (
     ArtifactRef,
@@ -127,7 +128,7 @@ class CatalogSnapshot:
             raise ValueError("entries")
         object.__setattr__(self, "selectors", freeze_json(self.selectors))
         object.__setattr__(self, "entries", es)
-        object.__setattr__(self, "extensions", freeze_json(self.extensions))
+        object.__setattr__(self, "extensions", _freeze_extensions(self.extensions))
 
 
 @dataclass(frozen=True)
@@ -166,7 +167,7 @@ class AcquisitionMetadata:
             )
         object.__setattr__(self, "attributes", MappingProxyType(a))
         object.__setattr__(self, "evidence_refs", _ev(self.evidence_refs))
-        object.__setattr__(self, "extensions", freeze_json(self.extensions))
+        object.__setattr__(self, "extensions", _freeze_extensions(self.extensions))
 
 
 @dataclass(frozen=True)
@@ -248,7 +249,7 @@ class QCReport:
         object.__setattr__(self, "input_refs", ins)
         object.__setattr__(self, "metrics", ms)
         object.__setattr__(self, "findings", fs)
-        object.__setattr__(self, "extensions", freeze_json(self.extensions))
+        object.__setattr__(self, "extensions", _freeze_extensions(self.extensions))
 
 
 @dataclass(frozen=True)
