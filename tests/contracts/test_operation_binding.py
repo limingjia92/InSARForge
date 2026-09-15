@@ -235,16 +235,29 @@ def test_binding_identifier_validation(name, value, error):
 def test_ports_are_canonical_and_defensively_owned():
     inputs = [input_port("synthetic:z"), input_port("synthetic:a")]
     outputs = [output_port("synthetic:y"), output_port("synthetic:b")]
-    value = binding(inputs=inputs, outputs=outputs)
+    handler = StaticHandler()
+    value = binding(inputs=inputs, outputs=outputs, handler=handler)
     reordered = binding(
         inputs=list(reversed(inputs)),
         outputs=list(reversed(outputs)),
         handler=value.handler,
     )
-    assert value == reordered
+    # Python 3.13+ dataclass equality compares fields individually; <=3.12 used
+    # tuple comparison. Inspect canonical fields and opaque adapter attachment
+    # directly, without relying on whole-binding equality.
+    assert tuple(p.port_id for p in reordered.inputs) == tuple(
+        p.port_id for p in value.inputs
+    )
+    assert tuple(p.port_id for p in reordered.outputs) == tuple(
+        p.port_id for p in value.outputs
+    )
+    assert value.handler is reordered.handler is handler
     assert [p.port_id for p in value.inputs] == ["synthetic:a", "synthetic:z"]
     assert [p.port_id for p in value.outputs] == ["synthetic:b", "synthetic:y"]
     assert value.inputs[0] is inputs[1] and value.outputs[0] is outputs[1]
+    assert value.inputs[1] is inputs[0] and value.outputs[1] is outputs[0]
+    assert all(a is b for a, b in zip(value.inputs, reordered.inputs, strict=True))
+    assert all(a is b for a, b in zip(value.outputs, reordered.outputs, strict=True))
     inputs.clear()
     outputs.clear()
     assert len(value.inputs) == len(value.outputs) == 2
@@ -290,12 +303,16 @@ def test_ports_require_exact_direction_and_member_types():
 
 def test_capabilities_are_set_like_canonical_owned_and_empty_allowed():
     caps = [CapabilityId("synthetic:z"), CapabilityId("synthetic:a")]
-    value = binding(required_capabilities=caps)
+    handler = StaticHandler()
+    value = binding(required_capabilities=caps, handler=handler)
     assert value.required_capabilities == tuple(reversed(caps))
     reordered = binding(
         required_capabilities=list(reversed(caps)), handler=value.handler
     )
-    assert value == reordered
+    # Compare canonical capabilities directly: Python 3.13+ field-wise dataclass
+    # equality, unlike <=3.12 tuple comparison, would compare the opaque handler.
+    assert value.required_capabilities == reordered.required_capabilities
+    assert value.handler is reordered.handler is handler
     caps.clear()
     assert len(value.required_capabilities) == 2
     assert binding().required_capabilities == ()
