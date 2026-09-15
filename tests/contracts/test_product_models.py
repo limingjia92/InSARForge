@@ -713,7 +713,7 @@ def test_draft_metadata_does_not_wrap_raw_values(value):
     [
         UnitSpec("unit:x", "quantity:x", None),
         reference_artifact(),
-        SemanticStatus.KNOWN,
+        SignSpec("convention:x", "observable:x", "direction:x", None, None, ()),
         (reference_artifact(),),
     ],
 )

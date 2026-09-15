@@ -1,6 +1,7 @@
 from collections import UserDict, UserList
 from collections.abc import Mapping, MutableSet
 from dataclasses import dataclass
+from enum import Enum, IntEnum, StrEnum
 from types import MappingProxyType
 
 import pytest
@@ -202,7 +203,6 @@ def test_unsupported_structured_domains(value):
 @pytest.mark.parametrize(
     "value",
     [
-        SemanticStatus.KNOWN,
         UnitSpec("u", "q", None),
         SignSpec("c", "o", "d", None, None, ()),
         ArtifactRef("r", "s", 1, None, "m", "l"),
@@ -211,9 +211,80 @@ def test_unsupported_structured_domains(value):
         PhysicalQuantity(1, UnitSpec("u", "q", None), None, ()),
     ],
 )
-def test_typed_contracts_and_enum_preserved(value):
+def test_typed_contracts_preserved(value):
     assert known(value).value is value
     assert known((value, value)).value == (value, value)
+
+
+class ScalarEnum(Enum):
+    ITEM = "value"
+
+
+class IntegerEnum(IntEnum):
+    ITEM = 1
+
+
+class StringEnum(StrEnum):
+    ITEM = "value"
+
+
+@pytest.mark.parametrize(
+    "member", [ScalarEnum.ITEM, IntegerEnum.ITEM, StringEnum.ITEM, SemanticStatus.KNOWN]
+)
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda x: x,
+        lambda x: ("safe", (x,)),
+        lambda x: MappingProxyType({"x": x}),
+        lambda x: (MappingProxyType({"x": (None, x)}),),
+        lambda x: (MappingProxyType({"safe": 1}), x),
+    ],
+)
+def test_enum_payload_rejected_before_snapshot(member, wrap, monkeypatch):
+    def unexpected_snapshot(value):
+        pytest.fail("Enum payload reached snapshot")
+
+    monkeypatch.setattr(semantics, "_snapshot_payload", unexpected_snapshot)
+    with pytest.raises(TypeError, match="^unsupported semantic payload: Enum$"):
+        known(wrap(member))
+
+
+@pytest.mark.parametrize("make_backing", [lambda: [1], lambda: {"steps": [1]}])
+@pytest.mark.parametrize(
+    "wrap",
+    [lambda x: x, lambda x: (x,), lambda x: MappingProxyType({"x": (x,)})],
+)
+def test_mutable_enum_rejected_without_retaining_semantic_state(make_backing, wrap):
+    backing = make_backing()
+
+    class MutableEnum(Enum):
+        ITEM = backing
+
+    accepted = []
+    with pytest.raises(TypeError, match="^unsupported semantic payload: Enum$"):
+        accepted.append(known(wrap(MutableEnum.ITEM)))
+    if isinstance(backing, list):
+        backing.append(2)
+        assert MutableEnum.ITEM.value == [1, 2]
+    else:
+        backing["steps"].append(2)
+        assert MutableEnum.ITEM.value == {"steps": [1, 2]}
+    assert accepted == []
+
+
+def test_enum_scalar_mixins_do_not_bypass_domain_validation():
+    assert isinstance(IntegerEnum.ITEM, int)
+    assert isinstance(StringEnum.ITEM, str)
+    for member in (IntegerEnum.ITEM, StringEnum.ITEM):
+        with pytest.raises(TypeError, match="^unsupported semantic payload: Enum$"):
+            known(member)
+
+
+@pytest.mark.parametrize("key", [ScalarEnum.ITEM, IntegerEnum.ITEM, StringEnum.ITEM])
+def test_enum_mapping_keys_rejected(key):
+    with pytest.raises(TypeError, match="^unsupported semantic payload: Enum$"):
+        known(MappingProxyType({key: "safe"}))
 
 
 @pytest.mark.parametrize(

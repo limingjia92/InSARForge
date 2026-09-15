@@ -31,6 +31,9 @@ def _validate_payload(value, *, json_only=False):
     frozen external dataclasses and arbitrary Mapping facades do not qualify.
     Within a JSON object, members must also belong to the FrozenJSON language.
     """
+    # Enum membership cannot establish deep ownership, even for scalar mixins.
+    if isinstance(value, Enum):
+        raise TypeError("unsupported semantic payload: Enum")
     if isinstance(value, (MutableMapping, MutableSequence, MutableSet, bytearray)):
         raise TypeError("mutable semantic payload")
     if value is None or isinstance(value, (str, bool, int)):
@@ -45,13 +48,13 @@ def _validate_payload(value, *, json_only=False):
         return
     if isinstance(value, MappingProxyType):
         for key, item in value.items():
+            if isinstance(key, Enum):
+                raise TypeError("unsupported semantic payload: Enum")
             if not isinstance(key, str):
                 raise TypeError("mapping keys must be strings")
             _validate_payload(item, json_only=True)
         return
     if not json_only:
-        if isinstance(value, Enum):
-            return
         cls = type(value)
         if (
             cls.__module__
