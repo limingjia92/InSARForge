@@ -49,15 +49,15 @@ def test_mask_target_must_exist_in_same_product(target, valid, as_draft):
     product = with_nodata(sv(NoDataSpec(NoDataKind.MASK, None, target)))
     if as_draft:
         product = ProductDraft(
-            product.schema_version,
-            product.product_kind,
-            product.profile_id,
-            product.profile_version,
-            product.lineage,
-            product.assets,
-            product.geometries,
-            product.layers,
-            product.extensions,
+            product_kind=product.product_kind,
+            profile_id=product.profile_id,
+            profile_version=product.profile_version,
+            assets=product.assets,
+            layers=product.layers,
+            geometries=product.geometries,
+            acquisition_refs=(),
+            semantic_metadata={},
+            extensions=product.extensions,
         )
     report = validate_product_structure(product)
     assert report.is_valid is valid

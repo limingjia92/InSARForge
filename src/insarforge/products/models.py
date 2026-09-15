@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from insarforge.contracts._extensions import _freeze_extensions
 from insarforge.contracts.identity import PluginRef
@@ -12,7 +14,11 @@ from insarforge.contracts.values import (
 from insarforge.products.assets import NativeAsset
 from insarforge.products.geometry import GeometryDescriptor
 from insarforge.products.layers import DataLayer
-from insarforge.products.semantics import SemanticStatus, SemanticValue
+from insarforge.products.semantics import (
+    SemanticStatus,
+    SemanticValue,
+    _validate_payload,
+)
 
 
 def _identity_value(value: SemanticValue[str], name: str) -> None:
@@ -111,6 +117,11 @@ def _unique(items, attr, name):
 
 def _collections(lineage, assets, geometries, layers):
     lineage = _tuple(lineage, ArtifactRef, "lineage")
+    assets, geometries, layers = _content_collections(assets, geometries, layers)
+    return lineage, assets, geometries, layers
+
+
+def _content_collections(assets, geometries, layers):
     assets = _tuple(assets, NativeAsset, "assets")
     geometries = _tuple(geometries, GeometryDescriptor, "geometries")
     layers = _tuple(layers, DataLayer, "layers")
@@ -127,45 +138,72 @@ def _collections(lineage, assets, geometries, layers):
             and layer.geometry_ref.value not in geometry_ids
         ):
             raise ValueError("geometry reference")
-    return lineage, assets, geometries, layers
+    return assets, geometries, layers
 
 
 def _common(schema_version, product_kind, profile_id, profile_version):
     _version(schema_version)
+    _content_common(product_kind, profile_id, profile_version)
+
+
+def _content_common(product_kind, profile_id, profile_version):
     validate_identifier(product_kind)
     validate_identifier(profile_id)
     _version(profile_version)
 
 
+def _semantic_metadata(value):
+    """Own the outer map; reuse canonical payload validation and immutable entries."""
+    if not isinstance(value, Mapping):
+        raise TypeError("semantic_metadata")
+    result = {}
+    for key, entry in value.items():
+        if type(key) is not str:
+            raise TypeError("semantic_metadata key")
+        validate_identifier(key)
+        if not isinstance(entry, SemanticValue):
+            raise TypeError("semantic_metadata value")
+        if entry.status is SemanticStatus.KNOWN:
+            _validate_payload(entry.value, json_only=True)
+        result[key] = entry
+    return MappingProxyType(result)
+
+
 @dataclass(frozen=True)
 class ProductDraft:
-    schema_version: int
     product_kind: str
     profile_id: str
     profile_version: int
-    lineage: tuple[ArtifactRef, ...]
     assets: tuple[NativeAsset, ...]
-    geometries: tuple[GeometryDescriptor, ...]
     layers: tuple[DataLayer, ...]
+    geometries: tuple[GeometryDescriptor, ...]
+    acquisition_refs: tuple[ArtifactRef, ...]
+    semantic_metadata: Mapping[str, SemanticValue[FrozenJSON]]
     extensions: FrozenJSON
 
     def __post_init__(self):
-        _common(
-            self.schema_version,
+        _content_common(
             self.product_kind,
             self.profile_id,
             self.profile_version,
         )
-        lineage, assets, geometries, layers = _collections(
-            self.lineage, self.assets, self.geometries, self.layers
+        assets, geometries, layers = _content_collections(
+            self.assets, self.geometries, self.layers
         )
+        acquisition_refs = tuple(self.acquisition_refs)
+        if any(type(ref) is not ArtifactRef for ref in acquisition_refs):
+            raise TypeError("acquisition_refs")
+        _unique(acquisition_refs, "record_id", "acquisition_refs")
         for name, value in (
-            ("lineage", lineage),
             ("assets", assets),
             ("geometries", geometries),
             ("layers", layers),
+            ("acquisition_refs", acquisition_refs),
         ):
             object.__setattr__(self, name, value)
+        object.__setattr__(
+            self, "semantic_metadata", _semantic_metadata(self.semantic_metadata)
+        )
         object.__setattr__(self, "extensions", _freeze_extensions(self.extensions))
 
 

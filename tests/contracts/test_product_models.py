@@ -69,14 +69,14 @@ def layer(geometry="geometry:x"):
 
 def draft(**kw):
     base = dict(
-        schema_version=1,
         product_kind="product:test",
         profile_id="profile:test",
         profile_version=1,
-        lineage=(),
         assets=(asset(),),
         geometries=(),
         layers=(),
+        acquisition_refs=(),
+        semantic_metadata={},
         extensions={},
     )
     base.update(kw)
@@ -95,8 +95,8 @@ def test_draft_and_cross_references():
 
 def test_immutability_and_product():
     src = []
-    d = draft(lineage=tuple(src), extensions={"test-owner:x": [1]})
-    assert isinstance(d.lineage, tuple)
+    d = draft(acquisition_refs=src, extensions={"test-owner:x": [1]})
+    assert isinstance(d.acquisition_refs, tuple)
     p = Product(
         "product:x",
         1,
@@ -268,7 +268,7 @@ def test_extension_snapshot_owns_all_layers(builder, readonly):
         stored["vendor-x:data"]["values"][0] = 3
 
 
-def test_product_and_draft_field_lists_preserve_current_envelope():
+def test_product_field_list_preserves_transitional_envelope():
     common = (
         "schema_version",
         "product_kind",
@@ -276,7 +276,6 @@ def test_product_and_draft_field_lists_preserve_current_envelope():
         "profile_version",
     )
     tail = ("lineage", "assets", "geometries", "layers", "extensions")
-    assert tuple(f.name for f in fields(ProductDraft)) == common + tail
     assert tuple(f.name for f in fields(Product)) == (
         "product_id",
         *common,
@@ -586,3 +585,259 @@ def test_reference_construction_does_not_resolve_or_compute(monkeypatch):
     assert producer.plugin is plugin
     assert production.task_fingerprint is fingerprint
     assert entry.artifact is artifact
+
+
+DRAFT_FIELDS = (
+    "product_kind",
+    "profile_id",
+    "profile_version",
+    "assets",
+    "layers",
+    "geometries",
+    "acquisition_refs",
+    "semantic_metadata",
+    "extensions",
+)
+CORE_FIELDS = (
+    "schema_id",
+    "schema_version",
+    "product_id",
+    "producer",
+    "produced_by",
+    "lineage",
+    "provenance_ref",
+)
+
+
+def test_draft_final_required_fields_and_frozen_state():
+    value = draft()
+    assert tuple(f.name for f in fields(ProductDraft)) == DRAFT_FIELDS
+    assert get_type_hints(ProductDraft)["acquisition_refs"] == tuple[ArtifactRef, ...]
+    assert all(
+        f.default is MISSING and f.default_factory is MISSING for f in fields(value)
+    )
+    assert not any(hasattr(value, name) for name in CORE_FIELDS)
+    for name in DRAFT_FIELDS:
+        with pytest.raises(FrozenInstanceError):
+            setattr(value, name, None)
+        supplied = {f.name: getattr(value, f.name) for f in fields(value)}
+        del supplied[name]
+        with pytest.raises(TypeError, match=name):
+            ProductDraft(**supplied)
+
+
+@pytest.mark.parametrize("name", CORE_FIELDS)
+def test_draft_rejects_core_owned_constructor_keywords(name):
+    with pytest.raises(TypeError, match=name):
+        draft(**{name: None})
+
+
+@pytest.mark.parametrize("container", [list, tuple, iter])
+def test_draft_acquisition_order_and_weak_identity(container):
+    first = reference_artifact(None)
+    second = replace(reference_artifact(), record_id="synthetic:another")
+    supplied = [second, first]
+    value = draft(acquisition_refs=container(supplied))
+    supplied.clear()
+    assert value.acquisition_refs == (second, first)
+    assert value.acquisition_refs[1] is first
+    assert value.acquisition_refs[1].semantic_digest is None
+    assert draft().acquisition_refs == ()
+    assert draft(acquisition_refs=[second]).acquisition_refs == (second,)
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        None,
+        "synthetic:ref",
+        1,
+        {},
+        LineageEntry("synthetic:role", reference_artifact()),
+    ],
+)
+def test_draft_acquisition_rejects_non_artifact_members(item):
+    with pytest.raises(TypeError, match="acquisition_refs"):
+        draft(acquisition_refs=[item])
+
+
+def test_draft_acquisition_requires_exact_artifact_type():
+    class SyntheticArtifact(ArtifactRef):
+        pass
+
+    with pytest.raises(TypeError, match="acquisition_refs"):
+        draft(acquisition_refs=[SyntheticArtifact(**vars(reference_artifact()))])
+
+
+@pytest.mark.parametrize("different_details", [False, True])
+def test_draft_acquisition_rejects_duplicate_record_ids(different_details):
+    first = reference_artifact()
+    second = (
+        replace(first, schema_id="synthetic:other", semantic_digest=None)
+        if different_details
+        else first
+    )
+    with pytest.raises(ValueError, match="acquisition_refs"):
+        draft(acquisition_refs=(first, second))
+
+
+@pytest.mark.parametrize("value", [None, "text", 1, [], ()])
+def test_draft_metadata_requires_mapping(value):
+    with pytest.raises(TypeError, match="semantic_metadata"):
+        draft(semantic_metadata=value)
+
+
+@pytest.mark.parametrize("key", [None, 1, True, SyntheticString("quality")])
+def test_draft_metadata_requires_exact_string_keys(key):
+    with pytest.raises(TypeError, match="key"):
+        draft(semantic_metadata={key: sv(1)})
+
+
+@pytest.mark.parametrize("key", ["", "two words", " leading", "tail ", "x\x00y"])
+def test_draft_metadata_rejects_invalid_identifier_keys(key):
+    with pytest.raises(ValueError):
+        draft(semantic_metadata={key: sv(1)})
+
+
+@pytest.mark.parametrize(
+    "value", [1, None, "raw", {}, [], {"status": "known", "value": 1}]
+)
+def test_draft_metadata_does_not_wrap_raw_values(value):
+    with pytest.raises(TypeError, match="semantic_metadata value"):
+        draft(semantic_metadata={"quality": value})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        UnitSpec("unit:x", "quantity:x", None),
+        reference_artifact(),
+        SemanticStatus.KNOWN,
+        (reference_artifact(),),
+    ],
+)
+def test_draft_metadata_rejects_generic_non_json_semantic_payload(payload):
+    value = sv(payload)  # Valid ADR0010 value; not FrozenJSON at this owner.
+    with pytest.raises(TypeError):
+        draft(semantic_metadata={"quality": value})
+
+
+@pytest.mark.parametrize("payload", [object(), {"raw": 1}, [1]])
+def test_draft_metadata_rejects_bypassed_opaque_or_mutable_payload(payload):
+    value = sv(1)
+    # Fresh test-only corruption follows the existing adversarial test convention.
+    object.__setattr__(value, "value", payload)
+    with pytest.raises(TypeError):
+        draft(semantic_metadata={"quality": value})
+
+
+@pytest.mark.parametrize("payload", ["text", True, 1, 1.0, (), (None, "text", 2)])
+def test_draft_metadata_preserves_frozen_json_scalars_and_arrays(payload):
+    entry = sv(payload)
+    value = draft(semantic_metadata={"quality": entry})
+    assert value.semantic_metadata["quality"] is entry
+    assert value.semantic_metadata["quality"].value is entry.value
+
+
+@pytest.mark.parametrize("readonly", [False, True])
+def test_draft_metadata_owns_outer_mapping_preserving_semantic_values(readonly):
+    from types import MappingProxyType
+
+    nested = {"items": (None, 1, 1.0, True)}
+    evidence = [reference_artifact(None)]
+    known = SemanticValue(
+        SemanticStatus.KNOWN, MappingProxyType(nested), "synthetic:reason", evidence
+    )
+    na = SemanticValue(
+        SemanticStatus.NOT_APPLICABLE, None, "synthetic:not-applicable", ()
+    )
+    entries = {"quality": known, "Quality": unknown(), "z": na}
+    supplied = MappingProxyType(entries) if readonly else entries
+    value = draft(semantic_metadata=supplied)
+    entries["quality"] = sv("replacement")
+    entries["added"] = sv(2)
+    del entries["Quality"]
+    nested.clear()
+    evidence.clear()
+    assert list(value.semantic_metadata) == ["quality", "Quality", "z"]
+    assert value.semantic_metadata["quality"] is known
+    assert value.semantic_metadata["z"] is na
+    assert value.semantic_metadata["Quality"].status is SemanticStatus.UNKNOWN
+    assert known.value == {"items": (None, 1, 1.0, True)}
+    assert known.reason_code == "synthetic:reason"
+    assert len(known.evidence_refs) == 1
+    assert known.evidence_refs[0].semantic_digest is None
+    with pytest.raises(TypeError):
+        value.semantic_metadata["quality"] = sv(2)
+    with pytest.raises(TypeError):
+        del value.semantic_metadata["z"]
+    with pytest.raises(TypeError):
+        known.value["items"] = ()
+
+
+def test_draft_metadata_mapping_order_is_nonsemantic_without_sorting():
+    entries = {"z": sv(1), "quality": unknown(), "Quality": sv("text")}
+    forward = draft(semantic_metadata=entries)
+    backward = draft(semantic_metadata=dict(reversed(entries.items())))
+    assert forward == backward
+    assert list(forward.semantic_metadata) == list(entries)
+    assert list(backward.semantic_metadata) == list(reversed(entries))
+
+
+def test_draft_metadata_and_extensions_keep_distinct_contracts():
+    value = draft(
+        semantic_metadata={"quality": sv(1)}, extensions={"vendor-x:quality": 2}
+    )
+    assert value.semantic_metadata["quality"].value == 1
+    assert value.extensions == {"vendor-x:quality": 2}
+    with pytest.raises(ValueError):
+        draft(extensions={"quality": 1})
+    with pytest.raises(TypeError):
+        draft(semantic_metadata={"quality": 1})
+    assert (
+        draft(semantic_metadata={"a:b:c": sv(1)}).semantic_metadata["a:b:c"].value == 1
+    )
+
+
+def test_draft_content_collections_remain_owned_and_linked():
+    assets = [asset()]
+    geometries = [final_geometry()]
+    layers = [layer()]
+    value = draft(assets=assets, geometries=geometries, layers=layers)
+    assets.clear()
+    geometries.clear()
+    layers.clear()
+    assert value.assets == (asset(),)
+    assert value.geometries == (final_geometry(),)
+    assert value.layers == (layer(),)
+    with pytest.raises(ValueError):
+        draft(geometries=(final_geometry(), final_geometry()))
+    with pytest.raises(ValueError):
+        draft(geometries=(final_geometry(),), layers=(layer(), layer()))
+
+
+def test_draft_acquisition_and_metadata_construction_never_resolves(monkeypatch):
+    import builtins
+    import io
+    import socket
+
+    from insarforge.core.registry import PluginRegistry
+
+    reference = reference_artifact(None)
+    entry = SemanticValue(
+        SemanticStatus.UNKNOWN, None, "synthetic:unknown", (reference,)
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Draft construction attempted lookup or I/O")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(builtins, "open", forbidden)
+        patch.setattr(io, "open", forbidden)
+        patch.setattr(socket, "socket", forbidden)
+        patch.setattr(PluginRegistry, "resolve", forbidden)
+        value = draft(
+            acquisition_refs=(reference,), semantic_metadata={"quality": entry}
+        )
+    assert value.acquisition_refs == (reference,)
+    assert value.semantic_metadata["quality"] is entry

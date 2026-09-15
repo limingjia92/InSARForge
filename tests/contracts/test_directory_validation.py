@@ -538,7 +538,17 @@ def test_reference_linkage_without_dereference(tmp_path, monkeypatch, schema, ve
 def test_ordinary_validator_separation(tmp_path, monkeypatch):
     ref = ArtifactRef("record", verifier.SID, 1, None, "digest", "missing-manifest")
     a = asset(tmp_path, ref=ref)
-    draft = ProductDraft(1, "generic", "profile", 1, (), (a,), (), (), {})
+    draft = ProductDraft(
+        product_kind="generic",
+        profile_id="profile",
+        profile_version=1,
+        assets=(a,),
+        layers=(),
+        geometries=(),
+        acquisition_refs=(),
+        semantic_metadata={},
+        extensions={},
+    )
     monkeypatch.setattr(verifier, "validate_directory_members", forbidden)
     monkeypatch.setattr(os, "scandir", forbidden)
     r = validate_product_assets(draft)

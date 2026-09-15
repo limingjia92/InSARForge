@@ -18,7 +18,17 @@ from insarforge.products.semantics import SemanticStatus, SemanticValue
 
 
 def test_empty_profile_matches_draft():
-    product = ProductDraft(1, "kind:test", "profile:test", 1, (), (), (), (), {})
+    product = ProductDraft(
+        product_kind="kind:test",
+        profile_id="profile:test",
+        profile_version=1,
+        assets=(),
+        layers=(),
+        geometries=(),
+        acquisition_refs=(),
+        semantic_metadata={},
+        extensions={},
+    )
     profile = ProductProfile("profile:test", 1, (), (), (), (), {})
     report = validate_product_profile(product, profile)
     assert report.is_valid and report.is_fully_verified
