@@ -12,7 +12,7 @@ from types import (
 from typing import Protocol, TypeAlias
 
 from insarforge.contracts.context import ExecutionContext, ResourceAllocation
-from insarforge.contracts.identity import CapabilityId, PluginKind, PluginRef
+from insarforge.contracts.identity import CapabilityId
 from insarforge.contracts.plugins import (
     QC,
     Analyzer,
@@ -27,46 +27,6 @@ from insarforge.products.assets import NativeAsset
 from insarforge.products.models import Product, ProductDraft
 from insarforge.products.semantics import SemanticValue
 from insarforge.products.validation import ProductValidationReport
-
-
-@dataclass(frozen=True)
-class OperationRequirement:
-    operation_id: str
-    plugin_kind: PluginKind
-    capability: CapabilityId
-
-    def __post_init__(self):
-        validate_identifier(self.operation_id)
-        if not isinstance(self.plugin_kind, PluginKind):
-            raise TypeError("plugin_kind")
-        if not isinstance(self.capability, CapabilityId):
-            raise TypeError("capability")
-
-
-@dataclass(frozen=True)
-class OperationBinding:
-    requirement: OperationRequirement
-    plugin_ref: PluginRef
-
-    def __post_init__(self):
-        if not isinstance(self.requirement, OperationRequirement):
-            raise TypeError("requirement")
-        if not isinstance(self.plugin_ref, PluginRef):
-            raise TypeError("plugin_ref")
-        if self.plugin_ref.kind is not self.requirement.plugin_kind:
-            raise ValueError("plugin kind mismatch")
-
-    @property
-    def operation_id(self):
-        return self.requirement.operation_id
-
-    @property
-    def plugin_kind(self):
-        return self.requirement.plugin_kind
-
-    @property
-    def capability(self):
-        return self.requirement.capability
 
 
 @dataclass(frozen=True)
@@ -359,3 +319,66 @@ class OperationHandler(Protocol):
         parameters: FrozenJSON,
         context: ExecutionContext,
     ) -> TaskOutcome: ...
+
+
+@dataclass(frozen=True)
+class OperationBinding:
+    """Complete static operation declaration; identity is owned by registration."""
+
+    operation_id: str
+    operation_api_version: int
+    parameter_schema_id: str
+    parameter_schema_version: int
+    inputs: tuple[InputPortContract, ...]
+    outputs: tuple[OutputPortContract, ...]
+    required_capabilities: tuple[CapabilityId, ...]
+    validator_revision: int
+    handler: OperationHandler
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("operation_id", self.operation_id),
+            ("parameter_schema_id", self.parameter_schema_id),
+        ):
+            if type(value) is not str:
+                raise TypeError(name)
+            validate_identifier(value)
+        for name, value in (
+            ("operation_api_version", self.operation_api_version),
+            ("parameter_schema_version", self.parameter_schema_version),
+            ("validator_revision", self.validator_revision),
+        ):
+            if type(value) is not int:
+                raise TypeError(name)
+            if value < 1:
+                raise ValueError(name)
+        inputs = tuple(self.inputs)
+        outputs = tuple(self.outputs)
+        if any(type(port) is not InputPortContract for port in inputs):
+            raise TypeError("inputs")
+        if any(type(port) is not OutputPortContract for port in outputs):
+            raise TypeError("outputs")
+        port_ids = [port.port_id for port in inputs + outputs]
+        if len(set(port_ids)) != len(port_ids):
+            raise ValueError("duplicate port_id")
+        capabilities = tuple(self.required_capabilities)
+        if any(type(cap) is not CapabilityId for cap in capabilities):
+            raise TypeError("required_capabilities")
+        if len(set(capabilities)) != len(capabilities):
+            raise ValueError("duplicate required_capabilities")
+        # Same descriptor-safe attachment policy as the port adapters; no calls
+        # and no runtime Protocol/signature enforcement.
+        _require_adapter_method(self.handler, "validate_spec")
+        _require_adapter_method(self.handler, "prepare")
+        _require_adapter_method(self.handler, "invoke")
+        object.__setattr__(
+            self, "inputs", tuple(sorted(inputs, key=lambda p: p.port_id))
+        )
+        object.__setattr__(
+            self, "outputs", tuple(sorted(outputs, key=lambda p: p.port_id))
+        )
+        object.__setattr__(
+            self,
+            "required_capabilities",
+            tuple(sorted(capabilities, key=lambda c: c.value)),
+        )
