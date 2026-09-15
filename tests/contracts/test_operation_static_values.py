@@ -485,8 +485,17 @@ def test_static_construction_never_opens_or_probes(monkeypatch):
 
 
 def test_operations_imports_only_static_dependencies_without_side_effects():
-    tree = ast.parse(Path(operations.__file__).read_text())
-    allowed = {
+    # ADR0013 adds these operation interfaces, not a universal plugin family.
+    allowed_protocols = {
+        "ProbeContext",
+        "PreparedExecution",
+        "OperationHandler",
+        "InputCodec",
+        "OutputCodec",
+        "PortValidator",
+    }
+    # Preserve existing static modules; new dependencies are symbol-specific.
+    existing_modules = {
         "collections.abc",
         "dataclasses",
         "types",
@@ -498,16 +507,128 @@ def test_operations_imports_only_static_dependencies_without_side_effects():
         "insarforge.products.assets",
         "insarforge.products.models",
     }
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            assert node.level == 0 and node.module in allowed
-        elif isinstance(node, ast.Import):
-            assert all(alias.name in allowed for alias in node.names)
-        elif isinstance(node, ast.ClassDef):
-            assert not any(
-                isinstance(base, ast.Name) and base.id in {"Protocol", "ABC"}
-                for base in node.bases
-            )
+    added_imports = {
+        "inspect": {"getattr_static"},
+        "insarforge.contracts.context": {"ExecutionContext", "ResourceAllocation"},
+        "insarforge.products.semantics": {"SemanticValue"},
+        "insarforge.products.validation": {"ProductValidationReport"},
+    }
+
+    def assert_static_boundary(source):
+        tree = ast.parse(source)
+        imported = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert node.level == 0
+                assert node.module in existing_modules or node.module in added_imports
+                if node.module in added_imports:
+                    assert {alias.name for alias in node.names} <= added_imports[
+                        node.module
+                    ]
+                for alias in node.names:
+                    assert alias.name != "*"
+                    imported[alias.asname or alias.name] = (
+                        node.module + "." + alias.name
+                    )
+            elif isinstance(node, ast.Import):
+                assert all(alias.name in existing_modules for alias in node.names)
+                for alias in node.names:
+                    imported[alias.asname or alias.name] = alias.name
+
+        def base_name(base):
+            if isinstance(base, ast.Subscript):
+                return base_name(base.value)
+            if isinstance(base, ast.Name):
+                return imported.get(base.id, base.id)
+            if isinstance(base, ast.Attribute):
+                return base_name(base.value) + "." + base.attr
+            return ""
+
+        declared_protocols = set()
+        forbidden_names = {
+            "Plugin",
+            "PluginProtocol",
+            "BasePlugin",
+            "handler_id",
+            "codec_id",
+            "TaskSpec",
+            "WorkflowPlan",
+            "Scheduler",
+            "CacheStore",
+            "StateStore",
+            "getattr",
+            "__import__",
+            "eval",
+            "exec",
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                assert node.name not in forbidden_names
+                bases = {base_name(base) for base in node.bases}
+                assert not bases & {"ABC", "abc.ABC"}
+                if bases & ({"typing.Protocol"} | allowed_protocols):
+                    declared_protocols.add(node.name)
+                for member in node.body:
+                    if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        assert member.name not in {"run", "execute"}
+                        if member.name == "invoke":
+                            assert node.name == "OperationHandler"
+            elif isinstance(node, ast.Name):
+                assert node.id not in forbidden_names
+            elif isinstance(node, ast.Attribute):
+                assert node.attr not in forbidden_names | {"import_module"}
+            elif isinstance(node, ast.arg):
+                assert node.arg not in {"handler_id", "codec_id"}
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                assert node.value not in {"handler_id", "codec_id"}
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                assert node.func.attr not in {
+                    "prepare",
+                    "invoke",
+                    "decode",
+                    "encode",
+                    "validate",
+                    "validate_spec",
+                }
+        assert declared_protocols == allowed_protocols
+
+    source = Path(operations.__file__).read_text()
+    assert_static_boundary(source)
+    # Demonstrate that the allowlist still rejects forbidden additions.
+    for addition in (
+        "\nclass ExtraProtocol(Protocol): pass\n",
+        "\nclass ExtraProtocol(InputCodec): pass\n",
+        "\nclass Plugin(Protocol): pass\n",
+        "\nclass BadBusiness:\n    def run(self): pass\n",
+        "\nclass BadBusiness:\n    def invoke(self): pass\n",
+        "\nhandler_id = 'synthetic:handler'\n",
+        "\ncodec_id = 'synthetic:codec'\n",
+        "\ngetattr(plugin, operation)()\n",
+        "\n__import__('synthetic.adapter')\n",
+        "\nfrom insarforge.products.validation import validate_product_structure\n",
+        "\nfrom inspect import getmembers\n",
+    ):
+        with pytest.raises(AssertionError):
+            assert_static_boundary(source + addition)
+    for module in (
+        "insarforge.runtime",
+        "insarforge.workflow",
+        "insarforge.core.scheduler",
+        "insarforge.core.cache",
+        "insarforge.core.retry",
+        "insarforge.core.state",
+        "insarforge.core.resume",
+        "insarforge.provenance",
+        "insarforge.processors",
+        "subprocess",
+        "os",
+        "importlib",
+        "osgeo",
+        "numpy",
+        "xarray",
+    ):
+        with pytest.raises(AssertionError):
+            assert_static_boundary(source + "\nimport " + module + "\n")
     code = """
 import importlib.abc
 import sys
@@ -516,6 +637,8 @@ class BlockRuntime(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname.startswith((
             "insarforge.core.registry", "insarforge.contracts.execution",
+            "insarforge.core.scheduler", "insarforge.core.cache",
+            "insarforge.core.retry", "insarforge.core.state", "insarforge.core.resume",
             "insarforge.runtime", "insarforge.workflow", "insarforge.provenance",
             "insarforge.missions", "insarforge.providers", "insarforge.processors",
             "insarforge.corrections", "insarforge.analyzers", "insarforge.qc",
