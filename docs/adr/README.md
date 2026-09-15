@@ -16,3 +16,4 @@ Baseline: `9c8b2ba1bb5b44e9aca274b0f29f3df692206fc9`. Freeze: `P4.0-FREEZE-1`, 2
 - [ADR-0009](0009-grid-definition-and-geometry-reference.md) — ACCEPTED — Grid Definition and Geometry Reference Semantics
 - [ADR-0010](0010-semanticvalue-payload-domain-and-deep-ownership.md) — ACCEPTED — SemanticValue Payload Domain and Deep Ownership
 - [ADR-0011](0011-extension-namespace-grammar-and-ownership.md) — ACCEPTED — Extension Namespace Grammar and Ownership
+- [ADR-0012](0012-product-envelope-and-reference-contracts.md) — ACCEPTED — Product Envelope, Producer, Production and Lineage Reference Contracts
