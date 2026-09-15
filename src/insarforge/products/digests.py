@@ -115,9 +115,7 @@ def product_semantic_material(
             not isinstance(value, str) or not value or value != value.strip()
         ):
             raise ValueError("invalid asset content identity")
-    if any(v is None for v in asset_content_identities.values()) or any(
-        r.semantic_digest is None for r in product.lineage
-    ):
+    if any(v is None for v in asset_content_identities.values()):
         return None
     try:
         assets = [
@@ -177,8 +175,17 @@ def product_semantic_material(
                 "product_kind": product.product_kind,
                 "profile_id": product.profile_id,
                 "profile_version": product.profile_version,
-                "product_schema_version": product.schema_version,
-                "lineage_semantic_digests": [_ref(r) for r in product.lineage],
+                "acquisition_semantic_digests": [
+                    _ref(r) for r in product.acquisition_refs
+                ],
+                "semantic_metadata": _value(product.semantic_metadata),
+                "lineage": [
+                    {
+                        "role": entry.role,
+                        "artifact_semantic_digest": _ref(entry.artifact),
+                    }
+                    for entry in product.lineage
+                ],
                 "assets": assets,
                 "geometries": geometries,
                 "layers": layers,

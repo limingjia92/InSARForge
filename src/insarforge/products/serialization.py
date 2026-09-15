@@ -17,7 +17,7 @@ from insarforge.products.assets import (
 from insarforge.products.geometry import AxisDescriptor, GeometryDescriptor
 from insarforge.products.grid import GridDefinition
 from insarforge.products.layers import DataLayer, LayerSelector
-from insarforge.products.models import Product
+from insarforge.products.models import LineageEntry, ProducerRef, Product, ProductionRef
 from insarforge.products.nodata import NoDataKind, NoDataSpec
 from insarforge.products.semantics import (
     PhysicalQuantity,
@@ -27,8 +27,26 @@ from insarforge.products.semantics import (
     UnitSpec,
 )
 
-PRODUCT_MANIFEST_SCHEMA_ID = "insarforge:product-manifest"
-PRODUCT_MANIFEST_SCHEMA_VERSION = 1
+PRODUCT_MANIFEST_SCHEMA_ID = "insarforge:product"
+PRODUCT_MANIFEST_SCHEMA_VERSION = 2
+_PRODUCT_FIELDS = (
+    "product_kind",
+    "profile_id",
+    "profile_version",
+    "assets",
+    "layers",
+    "geometries",
+    "acquisition_refs",
+    "semantic_metadata",
+    "extensions",
+    "schema_id",
+    "schema_version",
+    "product_id",
+    "producer",
+    "produced_by",
+    "lineage",
+    "provenance_ref",
+)
 
 
 def _require_mapping_fields(value, expected, name):
@@ -118,6 +136,21 @@ def _e(x):
             "reason_code": x.reason_code,
             "evidence_refs": [_e(y) for y in x.evidence_refs],
         }
+    if isinstance(x, ProducerRef):
+        return {
+            "plugin": _e(x.plugin),
+            "implementation_version": x.implementation_version,
+            "implementation_identity_digest": _e(x.implementation_identity_digest),
+            "execution_identity_digest": _e(x.execution_identity_digest),
+        }
+    if isinstance(x, ProductionRef):
+        return {
+            "task_fingerprint": _e(x.task_fingerprint),
+            "output_port": x.output_port,
+            "attempt_id": x.attempt_id,
+        }
+    if isinstance(x, LineageEntry):
+        return {"role": x.role, "artifact": _e(x.artifact)}
     if isinstance(x, UnitSpec):
         return {
             "unit_id": x.unit_id,
@@ -200,24 +233,7 @@ def _e(x):
             "dimensions": list(x.dimensions),
         }
     if isinstance(x, Product):
-        return {
-            k: _e(getattr(x, k))
-            for k in (
-                "product_id",
-                "schema_version",
-                "product_kind",
-                "profile_id",
-                "profile_version",
-                "producer",
-                "producer_implementation_version",
-                "provenance_ref",
-                "lineage",
-                "assets",
-                "geometries",
-                "layers",
-                "extensions",
-            )
-        }
+        return {k: _e(getattr(x, k)) for k in _PRODUCT_FIELDS}
     if isinstance(x, (tuple, list)):
         return [_e(y) for y in x]
     if isinstance(x, (str, int, float, bool)) or x is None:
@@ -228,13 +244,7 @@ def _e(x):
 def product_to_manifest_value(product):
     if not isinstance(product, Product):
         raise TypeError("product")
-    value = freeze_json(
-        {
-            "schema_id": PRODUCT_MANIFEST_SCHEMA_ID,
-            "schema_version": 1,
-            "product": _e(product),
-        }
-    )
+    value = freeze_json(_e(product))
     _validate_persistence_value(value)
     return value
 
@@ -243,7 +253,7 @@ def product_to_manifest_bytes(product):
     return canonical_json_bytes(product_to_manifest_value(product))
 
 
-def _sv(v, typ=None):
+def _sv(v, typ=None, *, json_payload=False):
     if not isinstance(v, Mapping):
         raise TypeError("semantic")
     if set(v) != {"status", "value", "reason_code", "evidence_refs"}:
@@ -253,6 +263,9 @@ def _sv(v, typ=None):
     if status is not SemanticStatus.KNOWN:
         if value is not None:
             raise ValueError("non-null semantic value")
+    elif json_payload:
+        # Only explicit metadata envelopes admit a JSON payload from the wire.
+        value = freeze_json(value)
     elif typ:
         if typ is str:
             if not isinstance(value, str):
@@ -279,6 +292,14 @@ def _d(v, typ):
             "locator",
         },
         PluginRef: {"kind", "plugin_id", "api_version"},
+        ProducerRef: {
+            "plugin",
+            "implementation_version",
+            "implementation_identity_digest",
+            "execution_identity_digest",
+        },
+        ProductionRef: {"task_fingerprint", "output_port", "attempt_id"},
+        LineageEntry: {"role", "artifact"},
         UnitSpec: {"unit_id", "quantity_kind", "definition_ref"},
         SignSpec: {
             "convention_id",
@@ -332,6 +353,23 @@ def _d(v, typ):
         return ArtifactRef(**dict(v))
     if typ is PluginRef:
         return PluginRef(PluginKind(v["kind"]), v["plugin_id"], v["api_version"])
+    if typ is ProducerRef:
+        return ProducerRef(
+            plugin=_d(v["plugin"], PluginRef),
+            implementation_version=v["implementation_version"],
+            implementation_identity_digest=_sv(
+                v["implementation_identity_digest"], str
+            ),
+            execution_identity_digest=_sv(v["execution_identity_digest"], str),
+        )
+    if typ is ProductionRef:
+        return ProductionRef(
+            task_fingerprint=_sv(v["task_fingerprint"], str),
+            output_port=v["output_port"],
+            attempt_id=v["attempt_id"],
+        )
+    if typ is LineageEntry:
+        return LineageEntry(role=v["role"], artifact=_d(v["artifact"], ArtifactRef))
     if typ is UnitSpec:
         return UnitSpec(**dict(v))
     if typ is SignSpec:
@@ -418,56 +456,41 @@ def _d(v, typ):
 
 
 def product_from_manifest_value(value):
+    p = _require_mapping_fields(value, _PRODUCT_FIELDS, "product")
     if (
-        not isinstance(value, Mapping)
-        or set(value) != {"schema_id", "schema_version", "product"}
-        or value["schema_id"] != PRODUCT_MANIFEST_SCHEMA_ID
-        or not isinstance(value.get("schema_version"), int)
-        or isinstance(value.get("schema_version"), bool)
-        or value["schema_version"] != 1
+        type(p["schema_id"]) is not str
+        or p["schema_id"] != PRODUCT_MANIFEST_SCHEMA_ID
+        or not isinstance(p["schema_version"], int)
+        or isinstance(p["schema_version"], bool)
+        or p["schema_version"] != PRODUCT_MANIFEST_SCHEMA_VERSION
     ):
         raise ValueError("envelope")
-    p = value["product"]
-    if not isinstance(p, Mapping) or set(p) != {
-        "product_id",
-        "schema_version",
-        "product_kind",
-        "profile_id",
-        "profile_version",
-        "producer",
-        "producer_implementation_version",
-        "provenance_ref",
-        "lineage",
-        "assets",
-        "geometries",
-        "layers",
-        "extensions",
-    }:
-        raise ValueError("product fields")
-    if isinstance(p["schema_version"], bool) or not isinstance(
-        p["schema_version"], int
-    ):
-        raise ValueError("version")
-    if not isinstance(value["schema_version"], int) or isinstance(
-        value["schema_version"], bool
-    ):
-        raise ValueError("version")
+    if not isinstance(p["semantic_metadata"], Mapping):
+        raise TypeError("semantic_metadata")
     return Product(
-        p["product_id"],
-        p["schema_version"],
-        p["product_kind"],
-        p["profile_id"],
-        p["profile_version"],
-        _d(p["producer"], PluginRef),
-        p["producer_implementation_version"],
-        _d(p["provenance_ref"], ArtifactRef)
-        if p["provenance_ref"] is not None
-        else None,
-        tuple(_d(x, ArtifactRef) for x in _seq(p["lineage"], "lineage")),
-        tuple(_d(x, NativeAsset) for x in _seq(p["assets"], "assets")),
-        tuple(_d(x, GeometryDescriptor) for x in _seq(p["geometries"], "geometries")),
-        tuple(_d(x, DataLayer) for x in _seq(p["layers"], "layers")),
-        p["extensions"],
+        product_kind=p["product_kind"],
+        profile_id=p["profile_id"],
+        profile_version=p["profile_version"],
+        assets=tuple(_d(x, NativeAsset) for x in _seq(p["assets"], "assets")),
+        layers=tuple(_d(x, DataLayer) for x in _seq(p["layers"], "layers")),
+        geometries=tuple(
+            _d(x, GeometryDescriptor) for x in _seq(p["geometries"], "geometries")
+        ),
+        acquisition_refs=tuple(
+            _d(x, ArtifactRef) for x in _seq(p["acquisition_refs"], "acquisition_refs")
+        ),
+        semantic_metadata={
+            key: _sv(entry, json_payload=True)
+            for key, entry in p["semantic_metadata"].items()
+        },
+        extensions=p["extensions"],
+        schema_id=p["schema_id"],
+        schema_version=p["schema_version"],
+        product_id=p["product_id"],
+        producer=_d(p["producer"], ProducerRef),
+        produced_by=_d(p["produced_by"], ProductionRef),
+        lineage=tuple(_d(x, LineageEntry) for x in _seq(p["lineage"], "lineage")),
+        provenance_ref=p["provenance_ref"],
     )
 
 

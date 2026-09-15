@@ -115,12 +115,6 @@ def _unique(items, attr, name):
         raise ValueError(name)
 
 
-def _collections(lineage, assets, geometries, layers):
-    lineage = _tuple(lineage, ArtifactRef, "lineage")
-    assets, geometries, layers = _content_collections(assets, geometries, layers)
-    return lineage, assets, geometries, layers
-
-
 def _content_collections(assets, geometries, layers):
     assets = _tuple(assets, NativeAsset, "assets")
     geometries = _tuple(geometries, GeometryDescriptor, "geometries")
@@ -139,11 +133,6 @@ def _content_collections(assets, geometries, layers):
         ):
             raise ValueError("geometry reference")
     return assets, geometries, layers
-
-
-def _common(schema_version, product_kind, profile_id, profile_version):
-    _version(schema_version)
-    _content_common(product_kind, profile_id, profile_version)
 
 
 def _content_common(product_kind, profile_id, profile_version):
@@ -209,49 +198,70 @@ class ProductDraft:
 
 @dataclass(frozen=True)
 class Product:
-    product_id: str
-    schema_version: int
     product_kind: str
     profile_id: str
     profile_version: int
-    producer: PluginRef
-    producer_implementation_version: str
-    provenance_ref: ArtifactRef | None
-    lineage: tuple[ArtifactRef, ...]
     assets: tuple[NativeAsset, ...]
-    geometries: tuple[GeometryDescriptor, ...]
     layers: tuple[DataLayer, ...]
+    geometries: tuple[GeometryDescriptor, ...]
+    acquisition_refs: tuple[ArtifactRef, ...]
+    semantic_metadata: Mapping[str, SemanticValue[FrozenJSON]]
     extensions: FrozenJSON
+    schema_id: str
+    schema_version: int
+    product_id: str
+    producer: ProducerRef
+    produced_by: ProductionRef
+    lineage: tuple[LineageEntry, ...]
+    provenance_ref: str
 
     def __post_init__(self):
         validate_identifier(self.product_id)
-        _common(
-            self.schema_version,
+        _content_common(
             self.product_kind,
             self.profile_id,
             self.profile_version,
         )
-        if not isinstance(self.producer, PluginRef):
+        if type(self.schema_id) is not str:
+            raise TypeError("schema_id")
+        if self.schema_id != "insarforge:product":
+            raise ValueError("schema_id")
+        if isinstance(self.schema_version, bool) or not isinstance(
+            self.schema_version, int
+        ):
+            raise TypeError("schema_version")
+        if self.schema_version != 2:
+            raise ValueError("schema_version")
+        if type(self.producer) is not ProducerRef:
             raise TypeError("producer")
-        if (
-            not isinstance(self.producer_implementation_version, str)
-            or not self.producer_implementation_version
-            or self.producer_implementation_version
-            != self.producer_implementation_version.strip()
-        ):
-            raise ValueError("producer_implementation_version")
-        if self.provenance_ref is not None and not isinstance(
-            self.provenance_ref, ArtifactRef
-        ):
+        if type(self.produced_by) is not ProductionRef:
+            raise TypeError("produced_by")
+        if type(self.provenance_ref) is not str:
             raise TypeError("provenance_ref")
-        lineage, assets, geometries, layers = _collections(
-            self.lineage, self.assets, self.geometries, self.layers
+        validate_identifier(self.provenance_ref)
+        assets, geometries, layers = _content_collections(
+            self.assets, self.geometries, self.layers
         )
+        acquisition_refs = tuple(self.acquisition_refs)
+        if any(type(ref) is not ArtifactRef for ref in acquisition_refs):
+            raise TypeError("acquisition_refs")
+        _unique(acquisition_refs, "record_id", "acquisition_refs")
+        lineage = tuple(self.lineage)
+        if any(type(entry) is not LineageEntry for entry in lineage):
+            raise TypeError("lineage")
+        if len({(entry.role, entry.artifact.record_id) for entry in lineage}) != len(
+            lineage
+        ):
+            raise ValueError("lineage")
         for name, value in (
             ("lineage", lineage),
             ("assets", assets),
             ("geometries", geometries),
             ("layers", layers),
+            ("acquisition_refs", acquisition_refs),
         ):
             object.__setattr__(self, name, value)
+        object.__setattr__(
+            self, "semantic_metadata", _semantic_metadata(self.semantic_metadata)
+        )
         object.__setattr__(self, "extensions", _freeze_extensions(self.extensions))

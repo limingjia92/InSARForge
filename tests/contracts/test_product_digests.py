@@ -2,18 +2,27 @@ import hashlib
 from dataclasses import replace
 
 import pytest
-from test_product_models import populated_product, sv
+from test_product_models import populated_product, reference_artifact, sv, unknown
 
-from insarforge.contracts.values import ArtifactRef
+from insarforge.contracts.values import ArtifactRef, freeze_json
 from insarforge.products.digests import (
+    PRODUCT_CONTENT_DIGEST_ALGORITHM_REVISION,
     PRODUCT_CONTENT_DIGEST_DOMAIN_TAG,
+    PRODUCT_SEMANTIC_MATERIAL_SCHEMA_ID,
+    PRODUCT_SEMANTIC_MATERIAL_SCHEMA_VERSION,
     product_content_digest,
+    product_manifest_digest,
     product_semantic_material,
     sha256_hex,
 )
 from insarforge.products.layers import LayerSelector
+from insarforge.products.models import LineageEntry
 from insarforge.products.nodata import NoDataKind, NoDataSpec
 from insarforge.products.semantics import SemanticStatus, SemanticValue, UnitSpec
+from insarforge.products.serialization import (
+    product_from_manifest_bytes,
+    product_to_manifest_bytes,
+)
 
 
 def test_sha256():
@@ -496,3 +505,326 @@ def test_extension_mapping_order_and_empty_determinism():
     }
     assert content(product) is not None
     assert content(product) == content(replace(product, extensions={}))
+
+
+def identity_product():
+    first = reference_artifact("semantic:first")
+    second = replace(
+        first, record_id="record:second", semantic_digest="semantic:second"
+    )
+    return replace(
+        populated_product(),
+        acquisition_refs=(first, second),
+        lineage=(LineageEntry("role:z", first), LineageEntry("role:a", second)),
+        semantic_metadata={
+            "quality": SemanticValue(
+                SemanticStatus.KNOWN,
+                freeze_json({"array": [1, 2], "n": 1}),
+                "reason:quality",
+                (first, second),
+            ),
+            "state": unknown(),
+        },
+        extensions={"vendor:quality": {"array": [2, 1]}},
+    )
+
+
+def test_v2_content_projection_has_only_content_and_fixed_helper_revision():
+    product = identity_product()
+    projected = material(product)
+    assert set(projected) == {"schema_id", "schema_version", "product", "extensions"}
+    assert (
+        projected["schema_id"]
+        == PRODUCT_SEMANTIC_MATERIAL_SCHEMA_ID
+        == "insarforge:product-semantic-material"
+    )
+    assert projected["schema_version"] == PRODUCT_SEMANTIC_MATERIAL_SCHEMA_VERSION == 1
+    assert PRODUCT_CONTENT_DIGEST_ALGORITHM_REVISION == 1
+    assert (
+        PRODUCT_CONTENT_DIGEST_DOMAIN_TAG == b"insarforge:product-content-digest:v1\x00"
+    )
+    assert set(projected["product"]) == {
+        "product_kind",
+        "profile_id",
+        "profile_version",
+        "assets",
+        "layers",
+        "geometries",
+        "acquisition_semantic_digests",
+        "semantic_metadata",
+        "lineage",
+    }
+    assert projected["product"]["acquisition_semantic_digests"] == [
+        "semantic:first",
+        "semantic:second",
+    ]
+    assert projected["product"]["lineage"] == [
+        {"role": "role:z", "artifact_semantic_digest": "semantic:first"},
+        {"role": "role:a", "artifact_semantic_digest": "semantic:second"},
+    ]
+    assert projected["product"]["semantic_metadata"]["quality"] == {
+        "status": "known",
+        "value": {"array": [1, 2], "n": 1},
+        "reason_code": "reason:quality",
+        "evidence_semantic_digests": ["semantic:first", "semantic:second"],
+    }
+    assert projected["extensions"] == {"vendor:quality": {"array": [2, 1]}}
+    # Product schema literals cannot vary in a valid model; assert exclusion here.
+    assert not {
+        "schema_id",
+        "schema_version",
+        "product_schema_version",
+        "product_id",
+        "producer",
+        "produced_by",
+        "provenance_ref",
+    } & set(projected["product"])
+    assert content(product) is not None
+
+
+@pytest.mark.parametrize("field", ["acquisition_refs", "lineage"])
+@pytest.mark.parametrize("index", [0, 1])
+def test_v2_missing_strong_dependency_suppresses_both_content_helpers(field, index):
+    product = identity_product()
+    entries = list(getattr(product, field))
+    ref = entries[index] if field == "acquisition_refs" else entries[index].artifact
+    weak = replace(ref, semantic_digest=None)
+    entries[index] = (
+        weak if field == "acquisition_refs" else replace(entries[index], artifact=weak)
+    )
+    changed = replace(product, **{field: entries})
+    assert content(product) is not None
+    assert material(changed) is None
+    assert content(changed) is None
+    # Complete persistence identity exists; it cannot rescue semantic identity.
+    assert weak.record_id and weak.manifest_digest and weak.locator
+    assert product_from_manifest_bytes(product_to_manifest_bytes(changed)) == changed
+
+
+@pytest.mark.parametrize("field", ["acquisition_refs", "lineage"])
+@pytest.mark.parametrize("change", ["order", "semantic_digest", "remove"])
+def test_v2_strong_reference_order_target_and_membership_affect_content(field, change):
+    product = identity_product()
+    entries = list(getattr(product, field))
+    if change == "order":
+        entries.reverse()
+    elif change == "remove":
+        entries.pop()
+    elif field == "acquisition_refs":
+        entries[0] = replace(entries[0], semantic_digest="semantic:changed")
+    else:
+        entries[0] = replace(
+            entries[0],
+            artifact=replace(entries[0].artifact, semantic_digest="semantic:changed"),
+        )
+    changed = replace(product, **{field: entries})
+    assert content(changed) is not None
+    assert content(changed) != content(product)
+
+
+def test_v2_lineage_role_is_semantic_even_with_same_target():
+    product = identity_product()
+    changed = replace(
+        product,
+        lineage=(replace(product.lineage[0], role="role:changed"), product.lineage[1]),
+    )
+    assert content(changed) is not None
+    assert content(changed) != content(product)
+
+
+@pytest.mark.parametrize("slot", ["acquisition_refs", "lineage"])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("record_id", "record:persistence-only"),
+        ("manifest_digest", "manifest:other"),
+        ("locator", "synthetic://other/record"),
+        ("schema_id", "schema:other"),
+        ("schema_version", 2),
+    ],
+)
+def test_v2_strong_dependencies_ignore_persistence_fields(slot, field, value):
+    product = identity_product()
+    entries = list(getattr(product, slot))
+    ref = entries[0] if slot == "acquisition_refs" else entries[0].artifact
+    other = replace(ref, **{field: value})
+    entries[0] = (
+        other if slot == "acquisition_refs" else replace(entries[0], artifact=other)
+    )
+    changed = replace(product, **{slot: entries})
+    assert content(product) is not None
+    assert material(changed) == material(product)
+    assert content(changed) == content(product)
+    assert product_manifest_digest(changed) != product_manifest_digest(product)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("product_id",),
+        ("provenance_ref",),
+        ("producer", "plugin"),
+        ("producer", "implementation_version"),
+        ("producer", "implementation_identity_digest"),
+        ("producer", "execution_identity_digest"),
+        ("produced_by", "task_fingerprint"),
+        ("produced_by", "output_port"),
+        ("produced_by", "attempt_id"),
+    ],
+)
+def test_v2_envelope_changes_manifest_but_not_content(path):
+    product = identity_product()
+    if len(path) == 1:
+        changed = replace(product, **{path[0]: "synthetic:other-instance"})
+    else:
+        owner = getattr(product, path[0])
+        old = getattr(owner, path[1])
+        if path[1] == "plugin":
+            new = replace(old, plugin_id="synthetic:other-plugin")
+        elif isinstance(old, SemanticValue):
+            new = replace(old, value="synthetic:other-identity")
+        else:
+            new = "synthetic:other-text"
+        changed = replace(product, **{path[0]: replace(owner, **{path[1]: new})})
+    assert content(product) is not None
+    assert material(product) == material(changed)
+    assert content(product) == content(changed)
+    assert product_to_manifest_bytes(product) != product_to_manifest_bytes(changed)
+    assert product_manifest_digest(product) != product_manifest_digest(changed)
+
+
+@pytest.mark.parametrize(
+    "owner,field",
+    [
+        ("producer", "implementation_identity_digest"),
+        ("producer", "execution_identity_digest"),
+        ("produced_by", "task_fingerprint"),
+    ],
+)
+@pytest.mark.parametrize("status", [SemanticStatus.KNOWN, SemanticStatus.UNKNOWN])
+def test_v2_excluded_identity_availability_reason_and_weak_evidence_cannot_suppress_content(
+    owner, field, status
+):
+    product = identity_product()
+    weak = reference_artifact(None)
+    semantic = SemanticValue(
+        status,
+        "synthetic:identity" if status is SemanticStatus.KNOWN else None,
+        "synthetic:changed-reason",
+        (weak, weak),
+    )
+    changed = replace(
+        product, **{owner: replace(getattr(product, owner), **{field: semantic})}
+    )
+    assert content(product) is not None
+    assert material(changed) == material(product)
+    assert content(changed) == content(product)
+    assert product_to_manifest_bytes(changed) != product_to_manifest_bytes(product)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "key",
+        "known-value",
+        "status",
+        "reason",
+        "evidence",
+        "evidence-order",
+        "array-order",
+        "number-type",
+    ],
+)
+def test_v2_complete_metadata_semantics_affect_content(change):
+    product = identity_product()
+    entries = dict(product.semantic_metadata)
+    entry = entries["quality"]
+    if change == "key":
+        entries["Quality"] = entries.pop("quality")
+    elif change == "status":
+        entries["state"] = replace(
+            entries["state"], status=SemanticStatus.NOT_APPLICABLE
+        )
+    elif change == "reason":
+        entries["quality"] = replace(entry, reason_code="reason:other")
+    elif change == "evidence":
+        entries["quality"] = replace(
+            entry,
+            evidence_refs=(
+                replace(entry.evidence_refs[0], semantic_digest="semantic:other"),
+                *entry.evidence_refs[1:],
+            ),
+        )
+    elif change == "evidence-order":
+        entries["quality"] = replace(
+            entry, evidence_refs=tuple(reversed(entry.evidence_refs))
+        )
+    else:
+        payload = {"array": [1, 2], "n": 1}
+        if change == "known-value":
+            payload["n"] = 2
+        elif change == "array-order":
+            payload["array"] = [2, 1]
+        else:
+            payload["n"] = 1.0
+        entries["quality"] = replace(entry, value=freeze_json(payload))
+    changed = replace(product, semantic_metadata=entries)
+    assert content(changed) is not None
+    assert content(changed) != content(product)
+
+
+def test_v2_metadata_mapping_order_is_not_semantic_and_slots_do_not_merge():
+    product = identity_product()
+    entries = dict(reversed(product.semantic_metadata.items()))
+    entry = entries["quality"]
+    entries["quality"] = replace(entry, value=freeze_json({"n": 1, "array": [1, 2]}))
+    changed = replace(product, semantic_metadata=entries)
+    assert content(product) is not None
+    assert content(changed) == content(product)
+    assert content(replace(product, semantic_metadata={})) != content(product)
+    assert content(replace(product, extensions={})) != content(product)
+    assert (
+        material(product)["extensions"]
+        != material(product)["product"]["semantic_metadata"]
+    )
+
+
+@pytest.mark.parametrize("status", list(SemanticStatus))
+def test_v2_metadata_missing_evidence_identity_suppresses_content_in_all_states(status):
+    product = identity_product()
+    weak = reference_artifact(None)
+    entry = SemanticValue(
+        status,
+        freeze_json({"fact": 1}) if status is SemanticStatus.KNOWN else None,
+        "synthetic:reason",
+        (weak,),
+    )
+    changed = replace(product, semantic_metadata={"quality": entry})
+    assert material(changed) is None
+    assert content(changed) is None
+    assert product_from_manifest_bytes(product_to_manifest_bytes(changed)) == changed
+
+
+def test_v2_metadata_evidence_uses_semantic_identity_not_persistence():
+    product = identity_product()
+    entry = product.semantic_metadata["quality"]
+    changed = replace(
+        product,
+        semantic_metadata={
+            **product.semantic_metadata,
+            "quality": replace(
+                entry,
+                evidence_refs=tuple(
+                    replace(
+                        ref,
+                        record_id="record:other",
+                        manifest_digest="manifest:other",
+                        locator="synthetic://other",
+                    )
+                    for ref in entry.evidence_refs
+                ),
+            ),
+        },
+    )
+    assert content(changed) == content(product)
+    assert product_manifest_digest(changed) != product_manifest_digest(product)

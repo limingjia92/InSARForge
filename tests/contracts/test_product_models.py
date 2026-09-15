@@ -98,22 +98,28 @@ def test_immutability_and_product():
     d = draft(acquisition_refs=src, extensions={"test-owner:x": [1]})
     assert isinstance(d.acquisition_refs, tuple)
     p = Product(
-        "product:x",
-        1,
-        "product:test",
-        "profile:test",
-        1,
-        PluginRef(PluginKind.PROCESSOR, "plugin:x", 1),
-        "1.0",
-        None,
-        (),
-        (asset(),),
-        (),
-        (),
-        {},
+        product_kind="product:test",
+        profile_id="profile:test",
+        profile_version=1,
+        assets=(asset(),),
+        layers=(),
+        geometries=(),
+        acquisition_refs=(),
+        semantic_metadata={},
+        extensions={},
+        schema_id="insarforge:product",
+        schema_version=2,
+        product_id="product:x",
+        producer=producer_ref(
+            plugin=PluginRef(PluginKind.PROCESSOR, "plugin:x", 1),
+            implementation_version="1.0",
+        ),
+        produced_by=production_ref(),
+        lineage=(),
+        provenance_ref="synthetic:provenance",
     )
-    assert p.provenance_ref is None
-    with pytest.raises(Exception):
+    assert p.provenance_ref == "synthetic:provenance"
+    with pytest.raises(FrozenInstanceError):
         p.product_id = "x"
     names = {f.name for f in fields(Product)}
     assert not names & {
@@ -127,22 +133,8 @@ def test_immutability_and_product():
         "run_id",
         "attempt_id",
     }
-    with pytest.raises(ValueError):
-        Product(
-            "bad id",
-            1,
-            "product:test",
-            "profile:test",
-            1,
-            PluginRef(PluginKind.PROCESSOR, "plugin:x", 1),
-            "1.0",
-            None,
-            (),
-            (),
-            (),
-            (),
-            (),
-        )
+    with pytest.raises(ValueError, match="identifier"):
+        replace(p, product_id="bad id")
 
 
 def test_forward_references_resolve():
@@ -191,27 +183,33 @@ def final_geometry():
 
 
 def populated_product():
-    """Final geometry and layers with matching synthetic dimension identifiers."""
+    """Synthetic production with no acquisitions, metadata or processing inputs."""
     geometry = final_geometry()
     source = layer(geometry.geometry_id)
     return Product(
-        "product:synthetic",
-        1,
-        "product:test",
-        "profile:test",
-        1,
-        PluginRef(PluginKind.PROCESSOR, "plugin:synthetic", 1),
-        "synthetic-v1",
-        None,
-        (),
-        (asset(),),
-        (geometry,),
-        (
+        product_kind="product:test",
+        profile_id="profile:test",
+        profile_version=1,
+        assets=(asset(),),
+        layers=(
             source,
             replace(source, layer_id="mask:a"),
             replace(source, layer_id="mask:b"),
         ),
-        {},
+        geometries=(geometry,),
+        acquisition_refs=(),
+        semantic_metadata={},
+        extensions={},
+        schema_id="insarforge:product",
+        schema_version=2,
+        product_id="product:synthetic",
+        producer=producer_ref(
+            plugin=PluginRef(PluginKind.PROCESSOR, "plugin:synthetic", 1),
+            implementation_version="synthetic-v1",
+        ),
+        produced_by=production_ref(),
+        lineage=(),
+        provenance_ref="synthetic:provenance",
     )
 
 
@@ -268,25 +266,28 @@ def test_extension_snapshot_owns_all_layers(builder, readonly):
         stored["vendor-x:data"]["values"][0] = 3
 
 
-def test_product_field_list_preserves_transitional_envelope():
-    common = (
-        "schema_version",
+def test_product_final_field_order():
+    assert tuple(f.name for f in fields(Product)) == (
         "product_kind",
         "profile_id",
         "profile_version",
-    )
-    tail = ("lineage", "assets", "geometries", "layers", "extensions")
-    assert tuple(f.name for f in fields(Product)) == (
+        "assets",
+        "layers",
+        "geometries",
+        "acquisition_refs",
+        "semantic_metadata",
+        "extensions",
+        "schema_id",
+        "schema_version",
         "product_id",
-        *common,
         "producer",
-        "producer_implementation_version",
+        "produced_by",
+        "lineage",
         "provenance_ref",
-        *tail,
     )
 
 
-# S3a foundations are additive; the transitional envelope regression above stays.
+# S3a reference contracts remain unchanged when wired into Product.
 def reference_artifact(semantic_digest="synthetic:digest"):
     return ArtifactRef(
         "synthetic:record",
@@ -841,3 +842,422 @@ def test_draft_acquisition_and_metadata_construction_never_resolves(monkeypatch)
         )
     assert value.acquisition_refs == (reference,)
     assert value.semantic_metadata["quality"] is entry
+
+
+PRODUCT_FIELDS = DRAFT_FIELDS + CORE_FIELDS
+
+
+def test_product_final_types_and_frozen_required_fields():
+    value = populated_product()
+    hints = get_type_hints(Product)
+    draft_hints = get_type_hints(ProductDraft)
+    assert hints == {
+        "product_kind": str,
+        "profile_id": str,
+        "profile_version": int,
+        "assets": tuple[NativeAsset, ...],
+        "layers": tuple[DataLayer, ...],
+        "geometries": tuple[GeometryDescriptor, ...],
+        "acquisition_refs": tuple[ArtifactRef, ...],
+        "semantic_metadata": draft_hints["semantic_metadata"],
+        "extensions": draft_hints["extensions"],
+        "schema_id": str,
+        "schema_version": int,
+        "product_id": str,
+        "producer": ProducerRef,
+        "produced_by": ProductionRef,
+        "lineage": tuple[LineageEntry, ...],
+        "provenance_ref": str,
+    }
+    assert tuple(f.name for f in fields(ProductDraft)) == DRAFT_FIELDS
+    assert Product.__dataclass_params__.frozen
+    assert all(
+        f.default is MISSING and f.default_factory is MISSING for f in fields(value)
+    )
+    for name in PRODUCT_FIELDS:
+        with pytest.raises(FrozenInstanceError):
+            setattr(value, name, None)
+
+
+@pytest.mark.parametrize("name", PRODUCT_FIELDS)
+def test_product_requires_every_final_field(name):
+    value = populated_product()
+    supplied = {f.name: getattr(value, f.name) for f in fields(value)}
+    del supplied[name]
+    with pytest.raises(TypeError, match=name):
+        Product(**supplied)
+
+
+def test_product_has_no_transitional_version_field_or_alias():
+    value = populated_product()
+    name = "producer_implementation_version"
+    assert name not in {f.name for f in fields(value)}
+    assert not hasattr(Product, name)
+    assert not hasattr(value, name)
+    supplied = {f.name: getattr(value, f.name) for f in fields(value)}
+    with pytest.raises(TypeError, match=name):
+        Product(**supplied, producer_implementation_version="synthetic:legacy")
+
+
+@pytest.mark.parametrize(
+    "value", [None, 2, True, SyntheticString("insarforge:product")]
+)
+def test_product_schema_id_requires_string(value):
+    with pytest.raises(TypeError, match="schema_id"):
+        replace(populated_product(), schema_id=value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "synthetic:other",
+        "insarforge:product-manifest",
+        " insarforge:product",
+        "insarforge:product ",
+        "InSARForge:product",
+    ],
+)
+def test_product_schema_id_requires_exact_literal(value):
+    with pytest.raises(ValueError, match="schema_id"):
+        replace(populated_product(), schema_id=value)
+
+
+@pytest.mark.parametrize("value", [True, False, 2.0, "2", None])
+def test_product_schema_version_requires_integer_not_bool(value):
+    with pytest.raises(TypeError, match="schema_version"):
+        replace(populated_product(), schema_version=value)
+
+
+@pytest.mark.parametrize("value", [1, 3, 0, -1])
+def test_product_schema_version_requires_two(value):
+    with pytest.raises(ValueError, match="schema_version"):
+        replace(populated_product(), schema_version=value)
+
+
+def test_product_preserves_supplied_envelope_without_cross_slot_rules():
+    producer = producer_ref(implementation_identity_digest=unknown())
+    production = production_ref(task_fingerprint=unknown())
+    value = replace(
+        populated_product(),
+        product_id="Product:instance/测试",
+        producer=producer,
+        produced_by=production,
+        provenance_ref="Provenance:separate/测试",
+    )
+    assert value.schema_id == "insarforge:product"
+    assert type(value.schema_version) is int and value.schema_version == 2
+    assert value.product_id == "Product:instance/测试"
+    assert value.producer is producer
+    assert value.produced_by is production
+    assert value.provenance_ref == "Provenance:separate/测试"
+    assert value.provenance_ref != production.attempt_id
+
+
+@pytest.mark.parametrize("name", ["producer", "produced_by"])
+@pytest.mark.parametrize("value", [None, "synthetic:reference", {}, 1])
+def test_product_requires_typed_production_envelope(name, value):
+    with pytest.raises(TypeError, match=name):
+        replace(populated_product(), **{name: value})
+
+
+def test_product_rejects_old_producer_and_swapped_envelope_types():
+    value = populated_product()
+    for producer in (value.producer.plugin, value.produced_by):
+        with pytest.raises(TypeError, match="producer"):
+            replace(value, producer=producer)
+    with pytest.raises(TypeError, match="produced_by"):
+        replace(value, produced_by=value.producer)
+
+
+@pytest.mark.parametrize(
+    "name,cls", [("producer", ProducerRef), ("produced_by", ProductionRef)]
+)
+def test_product_requires_exact_production_envelope_types(name, cls):
+    class SyntheticReference(cls):
+        pass
+
+    value = populated_product()
+    supplied = SyntheticReference(**vars(getattr(value, name)))
+    with pytest.raises(TypeError, match=name):
+        replace(value, **{name: supplied})
+
+
+@pytest.mark.parametrize(
+    "value", [None, 1, {}, SyntheticString("synthetic:provenance")]
+)
+def test_product_provenance_requires_exact_string(value):
+    with pytest.raises(TypeError, match="provenance_ref"):
+        replace(populated_product(), provenance_ref=value)
+
+
+def test_product_provenance_rejects_nested_references():
+    for value in (reference_artifact(), sv("synthetic:provenance")):
+        with pytest.raises(TypeError, match="provenance_ref"):
+            replace(populated_product(), provenance_ref=value)
+
+
+@pytest.mark.parametrize("value", ["", "two words", " leading", "tail ", "x\x00y"])
+def test_product_provenance_rejects_invalid_identifiers(value):
+    with pytest.raises(ValueError, match="identifier"):
+        replace(populated_product(), provenance_ref=value)
+
+
+@pytest.mark.parametrize("name", ["product_id", "product_kind", "profile_id"])
+def test_product_preserves_content_and_instance_identifier_validation(name):
+    value = populated_product()
+    with pytest.raises(TypeError, match="identifier"):
+        replace(value, **{name: None})
+    with pytest.raises(ValueError, match="identifier"):
+        replace(value, **{name: "bad id"})
+
+
+def test_product_profile_version_remains_independent_of_schema_revision():
+    value = replace(populated_product(), profile_version=3)
+    assert value.profile_version == 3 and value.schema_version == 2
+    with pytest.raises(TypeError):
+        replace(value, profile_version=True)
+    with pytest.raises(ValueError):
+        replace(value, profile_version=0)
+
+
+@pytest.mark.parametrize("container", [list, tuple, iter])
+def test_product_acquisition_reuses_order_ownership_and_weak_ref_contract(container):
+    weak = reference_artifact(None)
+    other = replace(
+        weak, record_id="synthetic:other", schema_id="synthetic:open-schema"
+    )
+    supplied = [other, weak]
+    value = replace(populated_product(), acquisition_refs=container(supplied))
+    supplied.clear()
+    assert type(value.acquisition_refs) is tuple
+    assert value.acquisition_refs == (other, weak)
+    assert value.acquisition_refs[1] is weak
+    assert value.acquisition_refs[1].semantic_digest is None
+    assert value.lineage == ()  # No generated lineage or subset rule.
+    assert populated_product().acquisition_refs == ()
+
+
+@pytest.mark.parametrize("different_details", [False, True])
+def test_product_acquisition_rejects_duplicate_record_ids(different_details):
+    first = reference_artifact()
+    second = (
+        replace(first, schema_id="synthetic:other", semantic_digest=None)
+        if different_details
+        else first
+    )
+    with pytest.raises(ValueError, match="acquisition_refs"):
+        replace(populated_product(), acquisition_refs=[first, second])
+
+
+def test_product_acquisition_requires_exact_artifact_members():
+    class SyntheticArtifact(ArtifactRef):
+        pass
+
+    for item in (
+        None,
+        LineageEntry("synthetic:role", reference_artifact()),
+        SyntheticArtifact(**vars(reference_artifact())),
+    ):
+        with pytest.raises(TypeError, match="acquisition_refs"):
+            replace(populated_product(), acquisition_refs=[item])
+
+
+@pytest.mark.parametrize("readonly", [False, True])
+def test_product_metadata_reuses_owned_mapping_and_semantic_entries(readonly):
+    from types import MappingProxyType
+
+    nested = {"items": (1, None, True)}
+    known = sv(MappingProxyType(nested))
+    na = SemanticValue(SemanticStatus.NOT_APPLICABLE, None, "synthetic:unused", ())
+    entries = {"quality": known, "Quality": unknown(), "other": na}
+    supplied = MappingProxyType(entries) if readonly else entries
+    value = replace(populated_product(), semantic_metadata=supplied)
+    entries.clear()
+    nested.clear()
+    assert list(value.semantic_metadata) == ["quality", "Quality", "other"]
+    assert value.semantic_metadata["quality"] is known
+    assert known.value == {"items": (1, None, True)}
+    assert value.semantic_metadata["Quality"].status is SemanticStatus.UNKNOWN
+    assert value.semantic_metadata["other"] is na
+    with pytest.raises(TypeError):
+        value.semantic_metadata["added"] = sv(1)
+    with pytest.raises(TypeError):
+        del value.semantic_metadata["quality"]
+    assert populated_product().semantic_metadata == {}
+
+
+def test_product_metadata_reuses_mapping_key_and_payload_validation():
+    value = populated_product()
+    for bad in (None, []):
+        with pytest.raises(TypeError, match="semantic_metadata"):
+            replace(value, semantic_metadata=bad)
+    for key in (1, SyntheticString("quality")):
+        with pytest.raises(TypeError, match="key"):
+            replace(value, semantic_metadata={key: sv(1)})
+    for key in ("", "two words"):
+        with pytest.raises(ValueError, match="identifier"):
+            replace(value, semantic_metadata={key: sv(1)})
+    with pytest.raises(TypeError, match="semantic_metadata value"):
+        replace(value, semantic_metadata={"quality": 1})
+    with pytest.raises(TypeError):
+        replace(value, semantic_metadata={"quality": sv(reference_artifact())})
+
+
+def test_product_metadata_is_distinct_from_namespaced_extensions():
+    value = replace(
+        populated_product(),
+        semantic_metadata={"quality": sv(1), "a:b:c": unknown()},
+        extensions={"vendor:quality": 2},
+    )
+    assert value.semantic_metadata["quality"].value == 1
+    assert value.semantic_metadata["a:b:c"].status is SemanticStatus.UNKNOWN
+    assert value.extensions == {"vendor:quality": 2}
+    assert value == replace(
+        value, semantic_metadata=dict(reversed(value.semantic_metadata.items()))
+    )
+    with pytest.raises(ValueError):
+        replace(value, extensions={"quality": 2})
+
+
+@pytest.mark.parametrize("container", [list, tuple, iter])
+def test_product_lineage_order_ownership_roles_and_weak_identity(container):
+    weak = reference_artifact(None)
+    other = replace(weak, record_id="synthetic:other")
+    first = LineageEntry("role:z", weak)
+    different_role = LineageEntry("role:a", weak)
+    different_artifact = LineageEntry("role:z", other)
+    supplied = [first, different_role, different_artifact]
+    value = replace(populated_product(), lineage=container(supplied))
+    supplied.clear()
+    assert type(value.lineage) is tuple
+    assert value.lineage == (first, different_role, different_artifact)
+    assert value.lineage[0] is first
+    assert value.lineage[0].artifact.semantic_digest is None
+    assert value.acquisition_refs == ()  # No generated acquisition inventory.
+    assert populated_product().lineage == ()
+    assert replace(value, lineage=[first]).lineage == (first,)
+    assert replace(value, lineage=tuple(reversed(value.lineage))) != value
+
+
+@pytest.mark.parametrize("changed_details", [False, True])
+def test_product_lineage_rejects_duplicate_role_and_record_id(changed_details):
+    first = LineageEntry("synthetic:role", reference_artifact())
+    ref = (
+        replace(
+            first.artifact,
+            schema_id="synthetic:other",
+            semantic_digest=None,
+            manifest_digest="manifest:other",
+            locator="synthetic:elsewhere",
+        )
+        if changed_details
+        else first.artifact
+    )
+    duplicate = LineageEntry(first.role, ref)
+    with pytest.raises(ValueError, match="lineage"):
+        replace(populated_product(), lineage=[first, duplicate])
+
+
+def test_product_lineage_requires_exact_lineage_entry_members():
+    class SyntheticLineage(LineageEntry):
+        pass
+
+    ref = reference_artifact()
+    for item in (
+        ref,
+        None,
+        "synthetic:role",
+        {"role": "synthetic:role", "artifact": ref},
+        SyntheticLineage("synthetic:role", ref),
+    ):
+        with pytest.raises(TypeError, match="lineage"):
+            replace(populated_product(), lineage=[item])
+
+
+def test_product_acquisitions_and_lineage_are_independent_inventories():
+    first = reference_artifact(None)
+    second = replace(first, record_id="synthetic:second")
+    value = replace(
+        populated_product(),
+        acquisition_refs=[first],
+        lineage=[LineageEntry("synthetic:input", second)],
+    )
+    assert value.acquisition_refs == (first,)
+    assert value.lineage[0].artifact is second
+    overlap = replace(value, lineage=[LineageEntry("synthetic:input", first)])
+    assert overlap.lineage[0].artifact is overlap.acquisition_refs[0]
+
+
+def test_product_content_collections_remain_owned_and_linked():
+    original = populated_product()
+    assets, layers, geometries = (
+        list(original.assets),
+        list(original.layers),
+        list(original.geometries),
+    )
+    value = replace(original, assets=assets, layers=layers, geometries=geometries)
+    assets.clear()
+    layers.clear()
+    geometries.clear()
+    assert value == original
+    assert all(
+        type(getattr(value, name)) is tuple
+        for name in ("assets", "layers", "geometries")
+    )
+    for name in ("assets", "layers", "geometries"):
+        with pytest.raises(ValueError):
+            replace(value, **{name: getattr(value, name) * 2})
+        with pytest.raises(TypeError):
+            replace(value, **{name: [None]})
+    with pytest.raises(ValueError, match="asset reference"):
+        replace(value, assets=())
+    with pytest.raises(ValueError, match="geometry reference"):
+        replace(value, geometries=())
+
+
+def test_product_constructor_does_not_resolve_or_compute(monkeypatch):
+    import builtins
+    import hashlib
+    import io
+    import os
+    import socket
+
+    from insarforge.core.registry import PluginRegistry
+
+    original = populated_product()
+    ref = reference_artifact(None)
+    producer = producer_ref(execution_identity_digest=unknown())
+    production = production_ref(task_fingerprint=unknown())
+    lineage = [LineageEntry("synthetic:role", ref)]
+    metadata = {
+        "quality": SemanticValue(
+            SemanticStatus.UNKNOWN, None, "synthetic:unknown", (ref,)
+        )
+    }
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError(
+            "Product construction attempted I/O, lookup or computation"
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(builtins, "open", forbidden)
+        patch.setattr(io, "open", forbidden)
+        patch.setattr(os, "stat", forbidden)
+        patch.setattr(socket, "socket", forbidden)
+        patch.setattr(hashlib, "sha256", forbidden)
+        patch.setattr(PluginRegistry, "resolve", forbidden)
+        value = replace(
+            original,
+            producer=producer,
+            produced_by=production,
+            lineage=lineage,
+            acquisition_refs=[ref],
+            semantic_metadata=metadata,
+        )
+    assert value.producer is producer
+    assert value.produced_by is production
+    assert value.lineage == tuple(lineage)
+    assert value.acquisition_refs == (ref,)
+    assert value.semantic_metadata["quality"] is metadata["quality"]

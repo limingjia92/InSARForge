@@ -3,9 +3,11 @@ import math
 from dataclasses import replace
 
 import pytest
-from test_product_models import populated_product, sv, unknown
+from test_product_models import populated_product, reference_artifact, sv, unknown
 
+from insarforge.contracts.values import freeze_json
 from insarforge.products.layers import LayerSelector
+from insarforge.products.models import LineageEntry
 from insarforge.products.nodata import NoDataKind, NoDataSpec
 from insarforge.products.semantics import SemanticStatus, SemanticValue
 from insarforge.products.serialization import (
@@ -88,7 +90,7 @@ def test_populated_final_layer_roundtrip(selector, quantity, nodata):
     assert decoded.layers[0].dimensions == ("synthetic:z", "synthetic:a")
     if nodata.status is SemanticStatus.KNOWN:
         assert type(decoded.layers[0].nodata.value.value) is type(nodata.value.value)
-    assert set(value["product"]["layers"][0]) == {
+    assert set(value["layers"][0]) == {
         "layer_id",
         "role",
         "asset_id",
@@ -101,7 +103,7 @@ def test_populated_final_layer_roundtrip(selector, quantity, nodata):
         "dimensions",
     }
     if selector is not None:
-        assert set(value["product"]["layers"][0]["selector"]) == {
+        assert set(value["layers"][0]["selector"]) == {
             "format_id",
             "selector_string",
         }
@@ -122,7 +124,7 @@ def test_legacy_layer_and_selector_fields_rejected(target, key):
             layer_product(selector=LayerSelector("synthetic:format", "opaque"))
         )
     )
-    obj = value["product"]["layers"][0]
+    obj = value["layers"][0]
     if target == "selector":
         obj = obj["selector"]
     obj[key] = "synthetic:legacy"
@@ -137,7 +139,7 @@ def test_final_nested_fields_are_strict(target):
             layer_product(selector=LayerSelector("synthetic:format", "opaque"))
         )
     )
-    obj = original["product"]["layers"][0]
+    obj = original["layers"][0]
     if target == "selector":
         obj = obj["selector"]
     if target == "nodata":
@@ -166,20 +168,20 @@ def test_final_nested_fields_are_strict(target):
 )
 def test_nodata_decoder_enforces_spec(kind, value, mask):
     manifest = json.loads(product_to_manifest_bytes(populated_product()))
-    manifest["product"]["layers"][0]["nodata"]["value"] = dict(
+    manifest["layers"][0]["nodata"]["value"] = dict(
         kind=kind, value=value, mask_layer_ref=mask
     )
     with pytest.raises((ValueError, TypeError)):
         product_from_manifest_value(manifest)
 
 
-def test_pluginref_direct_producer_roundtrip():
+def test_pluginref_nested_producer_roundtrip():
     product = replace(populated_product(), assets=(), geometries=(), layers=())
     value = product_to_manifest_value(product)
-    producer = value["product"]["producer"]
+    producer = value["producer"]["plugin"]
     assert set(producer) == {"kind", "plugin_id", "api_version"}
     assert "asset_kind" not in producer
-    assert producer["kind"] == product.producer.kind.value
+    assert producer["kind"] == product.producer.plugin.kind.value
     assert product_from_manifest_value(value) == product
     data = product_to_manifest_bytes(product)
     assert product_from_manifest_bytes(data) == product
@@ -226,13 +228,13 @@ def test_current_model_nested_fields_remain_strict(target):
     )
     value = json.loads(product_to_manifest_bytes(product))
     objects = {
-        "producer": value["product"]["producer"],
-        "asset": value["product"]["assets"][0],
-        "integrity": value["product"]["assets"][0]["integrity"],
-        "geometry": value["product"]["geometries"][0],
-        "axis": value["product"]["geometries"][0]["axes"][0],
-        "grid": value["product"]["geometries"][0]["grid_definition"]["value"],
-        "reference": value["product"]["geometries"][0]["reference"]["value"],
+        "producer": value["producer"]["plugin"],
+        "asset": value["assets"][0],
+        "integrity": value["assets"][0]["integrity"],
+        "geometry": value["geometries"][0],
+        "axis": value["geometries"][0]["axes"][0],
+        "grid": value["geometries"][0]["grid_definition"]["value"],
+        "reference": value["geometries"][0]["reference"]["value"],
     }
     obj = objects[target]
     for key in list(obj):
@@ -254,7 +256,7 @@ def test_final_geometry_codec_field_symmetry_and_alignment():
 
     product = populated_product()
     geometry = product.geometries[0]
-    encoded = product_to_manifest_value(product)["product"]["geometries"][0]
+    encoded = product_to_manifest_value(product)["geometries"][0]
     for model, obj in (
         (geometry, encoded),
         (geometry.axes[0], encoded["axes"][0]),
@@ -279,7 +281,7 @@ def test_final_geometry_codec_field_symmetry_and_alignment():
 )
 def test_legacy_geometry_fields_are_rejected(target, key):
     value = geometry_manifest()
-    obj = value["product"]["geometries"][0]
+    obj = value["geometries"][0]
     if target == "axis":
         obj = obj["axes"][0]
     obj[key] = 2 if key == "size" else "synthetic:legacy"
@@ -318,7 +320,7 @@ def test_geometry_semantic_envelopes_roundtrip(field, status):
 @pytest.mark.parametrize("status", ["unknown", "not_applicable"])
 def test_nonknown_geometry_payload_must_be_null(field, status):
     value = geometry_manifest()
-    obj = value["product"]["geometries"][0][field]
+    obj = value["geometries"][0][field]
     obj.update(status=status, reason_code="synthetic:reason")
     with pytest.raises(ValueError, match="non-null"):
         product_from_manifest_value(value)
@@ -328,7 +330,7 @@ def test_nonknown_geometry_payload_must_be_null(field, status):
 @pytest.mark.parametrize("payload", [None, 1, "synthetic:wrong", [], {}])
 def test_known_geometry_payload_is_strictly_typed(field, payload):
     value = geometry_manifest()
-    value["product"]["geometries"][0][field]["value"] = payload
+    value["geometries"][0][field]["value"] = payload
     with pytest.raises((ValueError, TypeError)):
         product_from_manifest_value(value)
 
@@ -336,7 +338,7 @@ def test_known_geometry_payload_is_strictly_typed(field, payload):
 @pytest.mark.parametrize("field", ["grid_definition", "reference"])
 def test_geometry_semantic_envelope_fields_are_strict(field):
     value = geometry_manifest()
-    obj = value["product"]["geometries"][0][field]
+    obj = value["geometries"][0][field]
     for key in list(obj):
         saved = obj.pop(key)
         with pytest.raises(ValueError, match="fields"):
@@ -350,7 +352,7 @@ def test_geometry_semantic_envelope_fields_are_strict(field):
 @pytest.mark.parametrize("field", ["grid_definition", "reference"])
 def test_geometry_evidence_is_strict_artifact_array(field):
     value = geometry_manifest()
-    obj = value["product"]["geometries"][0][field]
+    obj = value["geometries"][0][field]
     obj["evidence_refs"] = {}
     with pytest.raises(TypeError, match="evidence_refs"):
         product_from_manifest_value(value)
@@ -377,9 +379,7 @@ def test_geometry_evidence_is_strict_artifact_array(field):
 )
 def test_grid_parameters_decoder_enforces_frozen_json_mapping(payload):
     value = geometry_manifest()
-    value["product"]["geometries"][0]["grid_definition"]["value"]["parameters"] = (
-        payload
-    )
+    value["geometries"][0]["grid_definition"]["value"]["parameters"] = payload
     with pytest.raises((TypeError, ValueError)):
         product_from_manifest_value(value)
 
@@ -387,9 +387,7 @@ def test_grid_parameters_decoder_enforces_frozen_json_mapping(payload):
 def test_grid_decoder_preserves_types_and_deep_immutability():
     value = geometry_manifest()
     parameters = {" nested ": {"values": [None, True, 7, 7.0, "测试"]}}
-    value["product"]["geometries"][0]["grid_definition"]["value"]["parameters"] = (
-        parameters
-    )
+    value["geometries"][0]["grid_definition"]["value"]["parameters"] = parameters
     decoded = product_from_manifest_value(value)
     stored = decoded.geometries[0].grid_definition.value.parameters
     parameters[" nested "]["values"].append(9)
@@ -415,7 +413,7 @@ def test_grid_decoder_preserves_types_and_deep_immutability():
 )
 def test_geometry_decoder_uses_final_constructor_invariants(field, payload):
     value = geometry_manifest()
-    value["product"]["geometries"][0][field] = payload
+    value["geometries"][0][field] = payload
     with pytest.raises((TypeError, ValueError)):
         product_from_manifest_value(value)
 
@@ -449,7 +447,7 @@ def test_reference_decoder_does_not_dereference_and_allows_missing_identity(
     import socket
 
     value = geometry_manifest()
-    target = value["product"]["geometries"][0]["reference"]["value"]
+    target = value["geometries"][0]["reference"]["value"]
     target.update(semantic_digest=None, locator="synthetic://never-fetch/record")
 
     def forbidden(*args, **kwargs):
@@ -478,9 +476,11 @@ def test_reference_decoder_does_not_dereference_and_allows_missing_identity(
     ids=["integrity", "member-ref", "provenance-ref", "anchor"],
 )
 @pytest.mark.parametrize("malformed", [{}, [], False, 0, "", True, 1, ["invalid"]])
-def test_s1_optional_values_do_not_collapse_to_null(via_bytes, path, malformed):
+def test_s1_optional_values_and_required_provenance_do_not_collapse_to_null(
+    via_bytes, path, malformed
+):
     value = json.loads(product_to_manifest_bytes(populated_product()))
-    node = value["product"]
+    node = value
     for key in path[:-1]:
         node = node[key]
     node[path[-1]] = malformed
@@ -495,7 +495,7 @@ def test_s1_optional_values_do_not_collapse_to_null(via_bytes, path, malformed):
 @pytest.mark.parametrize("malformed", [{}, "", False, 0, None, {"item": []}, [{}]])
 def test_s1_sign_evidence_requires_array_and_typed_elements(via_bytes, malformed):
     value = json.loads(product_to_manifest_bytes(populated_product()))
-    value["product"]["layers"][0]["sign"]["value"]["evidence_refs"] = malformed
+    value["layers"][0]["sign"]["value"]["evidence_refs"] = malformed
     with pytest.raises((TypeError, ValueError)):
         if via_bytes:
             product_from_manifest_bytes(canonical_json_bytes(value))
@@ -539,7 +539,8 @@ def s1_product_with_optional_values():
     return replace(
         product,
         assets=(source, directory),
-        provenance_ref=first,
+        provenance_ref="synthetic:provenance",
+        acquisition_refs=(first,),
         layers=(replace(layer, sign=sv(sign)), *product.layers[1:]),
     )
 
@@ -579,15 +580,15 @@ def test_s1_optional_nulls_and_present_values_roundtrip_without_io(
     [
         ("assets", 0, "integrity"),
         ("assets", 1, "member_manifest_ref"),
-        ("provenance_ref",),
+        ("acquisition_refs", 0),
         ("assets", 0, "location"),
         ("layers", 0, "sign", "value", "evidence_refs", 0),
     ],
-    ids=["integrity", "member-ref", "provenance-ref", "location", "sign-evidence"],
+    ids=["integrity", "member-ref", "acquisition-ref", "location", "sign-evidence"],
 )
 def test_s1_optional_nested_fields_remain_exact(via_bytes, path):
     value = json.loads(product_to_manifest_bytes(s1_product_with_optional_values()))
-    node = value["product"]
+    node = value
     for key in path:
         node = node[key]
 
@@ -610,9 +611,9 @@ def test_s1_optional_nested_fields_remain_exact(via_bytes, path):
 def test_s1_optional_decode_preserves_asset_kind_constraints(asset_kind):
     value = json.loads(product_to_manifest_bytes(s1_product_with_optional_values()))
     if asset_kind == "file":
-        value["product"]["assets"][1]["asset_kind"] = "file"
+        value["assets"][1]["asset_kind"] = "file"
     else:
-        value["product"]["assets"][0]["asset_kind"] = "directory"
+        value["assets"][0]["asset_kind"] = "directory"
     with pytest.raises(ValueError):
         product_from_manifest_value(value)
 
@@ -633,8 +634,8 @@ def test_s1_optional_decode_preserves_asset_kind_constraints(asset_kind):
 def test_namespaced_extensions_roundtrip(extensions):
     product = replace(populated_product(), extensions=extensions)
     value = product_to_manifest_value(product)
-    assert list(value["product"])[-1] == "extensions"
-    assert value["product"]["extensions"] == product.extensions
+    assert list(value)[8] == "extensions"
+    assert value["extensions"] == product.extensions
     assert product_from_manifest_value(value) == product
     data = product_to_manifest_bytes(product)
     decoded = product_from_manifest_bytes(data)
@@ -659,7 +660,7 @@ def test_namespaced_extensions_roundtrip(extensions):
 )
 def test_extension_decode_rejects_invalid_shape_and_keys(extensions, error):
     value = json.loads(product_to_manifest_bytes(populated_product()))
-    value["product"]["extensions"] = extensions
+    value["extensions"] = extensions
     with pytest.raises(error):
         product_from_manifest_value(value)
     with pytest.raises(error):
@@ -688,9 +689,9 @@ def test_extension_json_remains_strict(payload):
 def test_extension_migration_preserves_exact_product_fields(change):
     value = json.loads(product_to_manifest_bytes(populated_product()))
     if change == "missing":
-        del value["product"]["extensions"]
+        del value["extensions"]
     else:
-        value["product"]["unexpected"] = {}
+        value["unexpected"] = {}
     with pytest.raises(ValueError, match="product fields"):
         product_from_manifest_value(value)
 
@@ -706,3 +707,427 @@ def test_namespaced_extensions_do_not_bypass_safe_persistence(key, emit):
     )
     with pytest.raises(ContractError, match="PERSISTENCE_SECRET"):
         emit(product)
+
+
+PRODUCT_FIELDS = (
+    "product_kind",
+    "profile_id",
+    "profile_version",
+    "assets",
+    "layers",
+    "geometries",
+    "acquisition_refs",
+    "semantic_metadata",
+    "extensions",
+    "schema_id",
+    "schema_version",
+    "product_id",
+    "producer",
+    "produced_by",
+    "lineage",
+    "provenance_ref",
+)
+IDENTITY_PATHS = (
+    ("producer", "implementation_identity_digest"),
+    ("producer", "execution_identity_digest"),
+    ("produced_by", "task_fingerprint"),
+)
+
+
+def v2_product():
+    first = reference_artifact(None)
+    second = replace(
+        first, record_id="synthetic:second", semantic_digest="semantic:second"
+    )
+    return replace(
+        populated_product(),
+        acquisition_refs=(second, first),
+        lineage=(LineageEntry("role:z", first), LineageEntry("role:a", second)),
+        semantic_metadata={
+            "quality": SemanticValue(
+                SemanticStatus.KNOWN,
+                freeze_json(
+                    {"nested": [None, True, 1, 1.0, "科学"], "status": "opaque-json"}
+                ),
+                "synthetic:reason",
+                (second, first, second),
+            ),
+            "a:b:c": unknown(),
+            "unused": SemanticValue(
+                SemanticStatus.NOT_APPLICABLE, None, "synthetic:unused", ()
+            ),
+        },
+        extensions={"future-owner:data": {"array": [1, 2], "unknown": True}},
+    )
+
+
+def v2_wire():
+    return json.loads(product_to_manifest_bytes(v2_product()))
+
+
+def node_at(value, path):
+    for key in path:
+        value = value[key]
+    return value
+
+
+def decode_wire(value, via_bytes):
+    return (
+        product_from_manifest_bytes(canonical_json_bytes(value))
+        if via_bytes
+        else product_from_manifest_value(value)
+    )
+
+
+def test_v2_flat_populated_roundtrip_and_order():
+    product = v2_product()
+    value = product_to_manifest_value(product)
+    assert tuple(value) == PRODUCT_FIELDS
+    assert value["schema_id"] == "insarforge:product"
+    assert type(value["schema_version"]) is int and value["schema_version"] == 2
+    assert "product" not in value
+    assert product_from_manifest_value(value) == product
+    data = product_to_manifest_bytes(product)
+    decoded = product_from_manifest_bytes(data)
+    assert decoded == product
+    assert product_to_manifest_bytes(decoded) == data
+    wire = json.loads(data)
+    assert isinstance(wire["lineage"], list)
+    assert [entry["role"] for entry in wire["lineage"]] == ["role:z", "role:a"]
+    assert [r["record_id"] for r in wire["acquisition_refs"]] == [
+        "synthetic:second",
+        "synthetic:record",
+    ]
+    assert decoded.acquisition_refs[1].semantic_digest is None
+    assert decoded.lineage[0].artifact.semantic_digest is None
+    assert (
+        decoded.semantic_metadata["quality"].evidence_refs
+        == product.semantic_metadata["quality"].evidence_refs
+    )
+    assert type(decoded.semantic_metadata["quality"].value["nested"][2]) is int
+    assert type(decoded.semantic_metadata["quality"].value["nested"][3]) is float
+
+
+@pytest.mark.parametrize("name", PRODUCT_FIELDS)
+@pytest.mark.parametrize("via_bytes", [False, True])
+def test_v2_requires_every_top_level_field(name, via_bytes):
+    value = v2_wire()
+    del value[name]
+    with pytest.raises(ValueError, match="product fields"):
+        decode_wire(value, via_bytes)
+
+
+@pytest.mark.parametrize("name", ["extra", "producer_implementation_version"])
+@pytest.mark.parametrize("via_bytes", [False, True])
+def test_v2_rejects_extra_or_transitional_fields(name, via_bytes):
+    value = v2_wire()
+    value[name] = "synthetic:legacy"
+    with pytest.raises(ValueError, match="product fields"):
+        decode_wire(value, via_bytes)
+
+
+@pytest.mark.parametrize(
+    "field,payload",
+    [
+        ("schema_id", None),
+        ("schema_id", ""),
+        ("schema_id", "insarforge:product-manifest"),
+        ("schema_id", "Insarforge:product"),
+        ("schema_id", " insarforge:product"),
+        ("schema_version", 1),
+        ("schema_version", 3),
+        ("schema_version", True),
+        ("schema_version", False),
+        ("schema_version", 2.0),
+        ("schema_version", "2"),
+    ],
+)
+@pytest.mark.parametrize("via_bytes", [False, True])
+def test_v2_rejects_wrong_schema_literal_and_revision(field, payload, via_bytes):
+    value = v2_wire()
+    value[field] = payload
+    with pytest.raises(ValueError, match="envelope"):
+        decode_wire(value, via_bytes)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "v1-wrapper",
+        "v2-wrapper",
+        "flat-legacy",
+        "producer",
+        "lineage",
+        "null-provenance",
+        "nested-provenance",
+    ],
+)
+@pytest.mark.parametrize("via_bytes", [False, True])
+def test_v2_rejects_legacy_wire_shapes_without_translation(shape, via_bytes):
+    value = v2_wire()
+    if shape in {"v1-wrapper", "flat-legacy"}:
+        for field in (
+            "schema_id",
+            "produced_by",
+            "acquisition_refs",
+            "semantic_metadata",
+        ):
+            del value[field]
+        value["schema_version"] = 1
+        value["producer_implementation_version"] = value["producer"][
+            "implementation_version"
+        ]
+        value["producer"] = value["producer"]["plugin"]
+        value["lineage"] = [entry["artifact"] for entry in value["lineage"]]
+        value["provenance_ref"] = None
+        if shape == "v1-wrapper":
+            value = {
+                "schema_id": "insarforge:product-manifest",
+                "schema_version": 1,
+                "product": value,
+            }
+    elif shape == "v2-wrapper":
+        value = {
+            "schema_id": "insarforge:product",
+            "schema_version": 2,
+            "product": value,
+        }
+    elif shape == "producer":
+        value["producer"] = value["producer"]["plugin"]
+    elif shape == "lineage":
+        value["lineage"] = [entry["artifact"] for entry in value["lineage"]]
+    else:
+        value["provenance_ref"] = (
+            None if shape == "null-provenance" else value["acquisition_refs"][0]
+        )
+    with pytest.raises((TypeError, ValueError)):
+        decode_wire(value, via_bytes)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("producer",),
+        ("produced_by",),
+        ("lineage", 0),
+        ("producer", "plugin"),
+        ("lineage", 0, "artifact"),
+        ("acquisition_refs", 0),
+        *IDENTITY_PATHS,
+        ("semantic_metadata", "quality"),
+        ("semantic_metadata", "quality", "evidence_refs", 0),
+    ],
+)
+@pytest.mark.parametrize("via_bytes", [False, True])
+def test_v2_nested_objects_require_exact_fields(path, via_bytes):
+    value = v2_wire()
+    node = node_at(value, path)
+    for field in tuple(node):
+        saved = node.pop(field)
+        with pytest.raises(ValueError, match="fields"):
+            decode_wire(value, via_bytes)
+        node[field] = saved
+    node["extra"] = None
+    with pytest.raises(ValueError, match="fields"):
+        decode_wire(value, via_bytes)
+
+
+@pytest.mark.parametrize(
+    "known_flags",
+    [(a, b, c) for a in (False, True) for b in (False, True) for c in (False, True)],
+)
+def test_v2_identity_availability_roundtrips(known_flags):
+    value = v2_wire()
+    for path, known in zip(IDENTITY_PATHS, known_flags):
+        node = node_at(value, path)
+        node.update(
+            status="known" if known else "unknown",
+            value="opaque identity / 测试" if known else None,
+            reason_code="opaque reason / test",
+            evidence_refs=[value["acquisition_refs"][1]] * 2,
+        )
+    product = product_from_manifest_value(value)
+    data = product_to_manifest_bytes(product)
+    assert product_from_manifest_bytes(data) == product
+    assert product_to_manifest_bytes(product_from_manifest_bytes(data)) == data
+    for path, known in zip(IDENTITY_PATHS, known_flags):
+        stored = node_at(json.loads(data), path)
+        assert stored["status"] == ("known" if known else "unknown")
+        assert len(stored["evidence_refs"]) == 2
+        assert stored["evidence_refs"][0]["semantic_digest"] is None
+
+
+@pytest.mark.parametrize("path", IDENTITY_PATHS)
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"status": "not_applicable", "value": None, "reason_code": "synthetic:reason"},
+        {"status": "unknown", "value": None, "reason_code": None},
+        {"status": "unknown", "value": "fake", "reason_code": "synthetic:reason"},
+        {"status": "invalid"},
+        {"value": 1},
+        {"value": None},
+        {"value": ""},
+        {"evidence_refs": {}},
+        {"evidence_refs": [{"record_id": "incomplete"}]},
+    ],
+)
+@pytest.mark.parametrize("via_bytes", [False, True])
+def test_v2_identity_semantic_owner_rules_are_strict(path, change, via_bytes):
+    value = v2_wire()
+    node_at(value, path).update(change)
+    with pytest.raises((TypeError, ValueError)):
+        decode_wire(value, via_bytes)
+
+
+@pytest.mark.parametrize("path", IDENTITY_PATHS)
+@pytest.mark.parametrize("bare", [None, "synthetic:bare-identity"])
+def test_v2_identity_requires_explicit_envelope(path, bare):
+    value = v2_wire()
+    node_at(value, path[:-1])[path[-1]] = bare
+    with pytest.raises(TypeError):
+        product_from_manifest_value(value)
+
+
+@pytest.mark.parametrize("field", ["acquisition_refs", "lineage"])
+@pytest.mark.parametrize("malformed", [None, {}, "", 1, ["bare"]])
+@pytest.mark.parametrize("via_bytes", [False, True])
+def test_v2_reference_collections_require_arrays_of_typed_objects(
+    field, malformed, via_bytes
+):
+    value = v2_wire()
+    value[field] = malformed
+    with pytest.raises((TypeError, ValueError)):
+        decode_wire(value, via_bytes)
+
+
+@pytest.mark.parametrize("field", ["acquisition_refs", "lineage"])
+@pytest.mark.parametrize("via_bytes", [False, True])
+def test_v2_duplicate_reference_keys_are_rejected_by_owner(field, via_bytes):
+    value = v2_wire()
+    value[field].append(value[field][0])
+    with pytest.raises(ValueError, match=field):
+        decode_wire(value, via_bytes)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        [],
+        "raw",
+        {"quality": 1},
+        {"quality": {"value": 1}},
+        {
+            "bad key": {
+                "status": "unknown",
+                "value": None,
+                "reason_code": "reason",
+                "evidence_refs": [],
+            }
+        },
+    ],
+)
+@pytest.mark.parametrize("via_bytes", [False, True])
+def test_v2_metadata_requires_identifier_map_of_semantic_envelopes(payload, via_bytes):
+    value = v2_wire()
+    value["semantic_metadata"] = payload
+    with pytest.raises((TypeError, ValueError)):
+        decode_wire(value, via_bytes)
+
+
+@pytest.mark.parametrize(
+    "payload", [None, object(), {1: "wrong-key"}, [float("nan")], [float("inf")]]
+)
+def test_v2_metadata_known_payload_requires_frozen_json_domain(payload):
+    value = v2_wire()
+    value["semantic_metadata"]["quality"]["value"] = payload
+    with pytest.raises((TypeError, ValueError)):
+        product_from_manifest_value(value)
+
+
+def test_v2_metadata_decoding_owns_caller_mapping_payload_and_evidence():
+    value = v2_wire()
+    original = product_from_manifest_value(value)
+    payload = value["semantic_metadata"]["quality"]["value"]
+    evidence = value["semantic_metadata"]["quality"]["evidence_refs"]
+    decoded = product_from_manifest_value(value)
+    payload["nested"].append("caller-change")
+    evidence.clear()
+    value["semantic_metadata"].clear()
+    value["acquisition_refs"].clear()
+    value["lineage"].clear()
+    assert decoded == original
+    with pytest.raises(TypeError):
+        decoded.semantic_metadata["new"] = unknown()
+    with pytest.raises(TypeError):
+        decoded.semantic_metadata["quality"].value["nested"][0] = 2
+
+
+@pytest.mark.parametrize(
+    "replacement", ['{"x":1,"x":2}', "NaN", "Infinity", "-Infinity", "1e999"]
+)
+def test_v2_metadata_json_rejects_nested_duplicates_and_nonfinite(replacement):
+    product = replace(
+        v2_product(), semantic_metadata={"quality": sv("S3C2_JSON_MARKER")}
+    )
+    data = product_to_manifest_bytes(product).decode()
+    assert data.count('"S3C2_JSON_MARKER"') == 1
+    with pytest.raises(ValueError):
+        product_from_manifest_bytes(data.replace('"S3C2_JSON_MARKER"', replacement))
+
+
+def test_v2_nested_codecs_never_dereference_or_compute(monkeypatch):
+    import builtins
+    import hashlib
+    import io
+    import socket
+
+    from insarforge.core.registry import PluginRegistry
+
+    product = v2_product()
+    data = product_to_manifest_bytes(product)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("static Product codec attempted lookup or computation")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(builtins, "open", forbidden)
+        patch.setattr(io, "open", forbidden)
+        patch.setattr(socket, "socket", forbidden)
+        patch.setattr(hashlib, "sha256", forbidden)
+        patch.setattr(PluginRegistry, "resolve", forbidden)
+        assert product_from_manifest_bytes(data) == product
+        assert product_to_manifest_bytes(product) == data
+
+
+@pytest.mark.parametrize(
+    "path,payload",
+    [
+        (("producer", "plugin", "kind"), "not-a-plugin-kind"),
+        (("producer", "plugin", "plugin_id"), "bad id"),
+        (("producer", "plugin", "api_version"), True),
+        (("producer", "implementation_version"), ""),
+        (("produced_by", "output_port"), "bad port"),
+        (("produced_by", "attempt_id"), None),
+        (("lineage", 0, "role"), ""),
+        (("lineage", 0, "artifact"), None),
+        (("provenance_ref",), "bad pointer"),
+        (("semantic_metadata", "quality", "evidence_refs"), {}),
+        (("semantic_metadata", "a:b:c", "value"), "non-null"),
+        (("semantic_metadata", "unused", "reason_code"), None),
+    ],
+)
+@pytest.mark.parametrize("via_bytes", [False, True])
+def test_v2_nested_owner_and_semantic_validation(path, payload, via_bytes):
+    value = v2_wire()
+    node_at(value, path[:-1])[path[-1]] = payload
+    with pytest.raises((TypeError, ValueError)):
+        decode_wire(value, via_bytes)
+
+
+def test_v2_metadata_value_decoder_rejects_non_string_keys():
+    value = v2_wire()
+    value["semantic_metadata"][1] = value["semantic_metadata"]["quality"]
+    with pytest.raises(TypeError, match="key"):
+        product_from_manifest_value(value)

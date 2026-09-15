@@ -7,10 +7,10 @@ from dataclasses import replace
 from types import MappingProxyType
 
 import pytest
-from test_product_models import populated_product
+from test_product_models import populated_product, reference_artifact, sv
 
 from insarforge.contracts.errors import ContractError
-from insarforge.contracts.values import ArtifactRef
+from insarforge.contracts.values import ArtifactRef, freeze_json
 from insarforge.products.assets import AssetIntegrity, AssetKind
 from insarforge.products.digests import product_manifest_digest
 from insarforge.products.directory_manifest import (
@@ -22,6 +22,8 @@ from insarforge.products.directory_manifest_serialization import (
     directory_member_manifest_to_bytes,
     directory_member_manifest_to_value,
 )
+from insarforge.products.models import LineageEntry
+from insarforge.products.semantics import SemanticStatus, SemanticValue
 from insarforge.products.serialization import (
     canonical_json_bytes,
     product_from_manifest_bytes,
@@ -129,7 +131,9 @@ def test_persistence_guard_covers_declared_strings_beyond_extensions(emit, surfa
     if surface == "locator":
         product = replace(
             product,
-            provenance_ref=ArtifactRef("synthetic:r", "synthetic:s", 1, None, "m", url),
+            acquisition_refs=(
+                ArtifactRef("synthetic:r", "synthetic:s", 1, None, "m", url),
+            ),
         )
     elif surface == "coordinate_reference":
         geometry = product.geometries[0]
@@ -234,3 +238,121 @@ def test_emitters_have_no_io_or_environment_discovery(monkeypatch):
         assert product_to_manifest_bytes(product) == expected
         assert directory_member_manifest_to_bytes(manifest) == directory_bytes
         assert directory_member_manifest_from_bytes(directory_bytes) == manifest
+
+
+@pytest.mark.parametrize("emit", PRODUCT_EMITTERS)
+@pytest.mark.parametrize(
+    "surface",
+    [
+        "producer-plugin",
+        "producer-version",
+        "producer-implementation",
+        "producer-execution-reason",
+        "fingerprint",
+        "output-port",
+        "attempt-id",
+        "lineage-role",
+        "lineage-artifact",
+        "acquisition",
+        "metadata-value",
+        "metadata-reason",
+        "metadata-evidence",
+        "provenance",
+    ],
+)
+def test_final_v2_nested_fields_pass_through_existing_persistence_guard(emit, surface):
+    product = populated_product()
+    url = f"https://example.invalid/record?access_token={MARKER}"
+    ref = reference_artifact(None)
+    if surface == "producer-plugin":
+        product = replace(
+            product,
+            producer=replace(
+                product.producer, plugin=replace(product.producer.plugin, plugin_id=url)
+            ),
+        )
+    elif surface == "producer-version":
+        product = replace(
+            product, producer=replace(product.producer, implementation_version=url)
+        )
+    elif surface == "producer-implementation":
+        product = replace(
+            product,
+            producer=replace(product.producer, implementation_identity_digest=sv(url)),
+        )
+    elif surface == "producer-execution-reason":
+        identity = SemanticValue(SemanticStatus.UNKNOWN, None, url, ())
+        product = replace(
+            product,
+            producer=replace(product.producer, execution_identity_digest=identity),
+        )
+    elif surface in {"fingerprint", "output-port", "attempt-id"}:
+        field = {
+            "fingerprint": "task_fingerprint",
+            "output-port": "output_port",
+            "attempt-id": "attempt_id",
+        }[surface]
+        product = replace(
+            product,
+            produced_by=replace(
+                product.produced_by,
+                **{field: sv(url) if surface == "fingerprint" else url},
+            ),
+        )
+    elif surface == "lineage-role":
+        product = replace(product, lineage=(LineageEntry(url, ref),))
+    elif surface == "lineage-artifact":
+        product = replace(
+            product,
+            lineage=(LineageEntry("synthetic:role", replace(ref, locator=url)),),
+        )
+    elif surface == "acquisition":
+        product = replace(product, acquisition_refs=(replace(ref, locator=url),))
+    elif surface == "metadata-value":
+        product = replace(
+            product,
+            semantic_metadata={"quality": sv(freeze_json({"nested": [{"url": url}]}))},
+        )
+    elif surface == "metadata-reason":
+        product = replace(
+            product,
+            semantic_metadata={
+                "quality": SemanticValue(SemanticStatus.UNKNOWN, None, url, ())
+            },
+        )
+    elif surface == "metadata-evidence":
+        product = replace(
+            product,
+            semantic_metadata={
+                "quality": SemanticValue(
+                    SemanticStatus.UNKNOWN,
+                    None,
+                    "synthetic:reason",
+                    (replace(ref, locator=url),),
+                )
+            },
+        )
+    else:
+        product = replace(product, provenance_ref=url)
+    assert_safe_rejection(emit, product)
+
+
+def test_safe_final_v2_metadata_and_envelope_roundtrip_without_redaction():
+    product = replace(
+        populated_product(),
+        semantic_metadata={
+            "quality": sv(
+                freeze_json(
+                    {"text": "token is an ordinary word", "values": [None, 1, "科学"]}
+                )
+            )
+        },
+        acquisition_refs=(reference_artifact(None),),
+        lineage=(LineageEntry("role:synthetic", reference_artifact(None)),),
+    )
+    value = product_to_manifest_value(product)
+    assert "product" not in value
+    assert value["schema_id"] == "insarforge:product" and value["schema_version"] == 2
+    data = product_to_manifest_bytes(product)
+    assert product_from_manifest_bytes(data) == product
+    assert product_to_manifest_bytes(product_from_manifest_bytes(data)) == data
