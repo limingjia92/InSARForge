@@ -18,3 +18,4 @@ Baseline: `9c8b2ba1bb5b44e9aca274b0f29f3df692206fc9`. Freeze: `P4.0-FREEZE-1`, 2
 - [ADR-0011](0011-extension-namespace-grammar-and-ownership.md) — ACCEPTED — Extension Namespace Grammar and Ownership
 - [ADR-0012](0012-product-envelope-and-reference-contracts.md) — ACCEPTED — Product Envelope, Producer, Production and Lineage Reference Contracts
 - [ADR-0013](0013-static-operation-bindings-typed-ports-and-registration-ownership.md) — ACCEPTED — Static Operation Bindings, Typed Ports and Registration Ownership
+- [ADR-0014](0014-resolved-product-inputs-in-family-requests.md) — ACCEPTED — Resolved Product Inputs in Family Requests

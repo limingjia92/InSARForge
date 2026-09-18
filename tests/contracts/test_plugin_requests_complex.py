@@ -1,9 +1,11 @@
 import pytest
+from test_product_models import populated_product
 
 from insarforge.contracts.plugins import (
     AnalysisRequest,
     CorrectionRequest,
     ProcessingRequest,
+    ProductInput,
     QCRequest,
 )
 from insarforge.contracts.values import ArtifactRef
@@ -14,12 +16,20 @@ def ref(i="r"):
 
 
 def test_processing_and_analysis_freeze():
-    m = {"in": [ref()]}
+    product = populated_product()
+    paired = ProductInput(
+        ArtifactRef("r", product.schema_id, product.schema_version, None, "m", "l"),
+        product,
+    )
+    m = {"in": [paired]}
+    auxiliary = {"in": [ref()]}
     p = {"x": [1]}
-    r = ProcessingRequest("purpose", "profile", 1, m, [ref("a")], m, p)
+    r = ProcessingRequest("purpose", "profile", 1, m, [ref("a")], auxiliary, p)
     m["in"].clear()
+    auxiliary["in"].clear()
     p["x"].append(2)
-    assert r.product_inputs["in"] == (ref(),)
+    assert r.product_inputs["in"] == (paired,)
+    assert r.auxiliary_inputs["in"] == (ref(),)
     assert r.parameters["x"] == (1,)
     a = AnalysisRequest(r.product_inputs, r.auxiliary_inputs, "profile", 1, {})
     assert a.profile_id == "profile"

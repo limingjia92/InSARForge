@@ -68,6 +68,14 @@ def test_protocol_signatures():
     assert Processor not in Analyzer.__mro__
 
 
-def test_productdraft_is_type_checking_only():
-    code = "import sys; import insarforge.contracts.plugins; assert 'insarforge.products.models' not in sys.modules"
+def test_product_types_resolve_without_loading_operations():
+    code = """
+import sys
+from typing import get_type_hints
+from insarforge.contracts import plugins
+from insarforge.products.models import Product, ProductDraft
+assert get_type_hints(plugins.ProductInput)['value'] is Product
+assert get_type_hints(plugins.Provider.acquire)['return'] is ProductDraft
+assert 'insarforge.contracts.operations' not in sys.modules
+"""
     subprocess.run([sys.executable, "-c", code], check=True)

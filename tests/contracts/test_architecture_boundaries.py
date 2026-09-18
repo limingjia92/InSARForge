@@ -30,7 +30,7 @@ FORBIDDEN = (
 )
 
 
-def test_import_boundaries_and_product_forward_reference():
+def test_import_boundaries_and_lightweight_product_dependency():
     for path in PRODUCTION:
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
@@ -41,7 +41,7 @@ def test_import_boundaries_and_product_forward_reference():
             else:
                 continue
             assert not any(name.startswith(FORBIDDEN) for name in names), path
-    code = "import sys; from insarforge.contracts import plugins; assert 'insarforge.products.models' not in sys.modules; assert not {'numpy','pydantic','yaml','h5py','osgeo','earthaccess'} & set(sys.modules)"
+    code = "import sys; from insarforge.contracts import plugins; assert 'insarforge.products.models' in sys.modules; assert 'insarforge.contracts.operations' not in sys.modules; assert not {'numpy','pydantic','yaml','h5py','osgeo','earthaccess'} & set(sys.modules)"
     subprocess.run([sys.executable, "-c", code], check=True)
 
 

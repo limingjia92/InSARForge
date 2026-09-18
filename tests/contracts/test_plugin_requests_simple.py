@@ -2,10 +2,12 @@ import dataclasses
 from types import MappingProxyType
 
 import pytest
+from test_product_models import populated_product
 
 from insarforge.contracts.plugins import (
     AcquireRequest,
     InspectionRequest,
+    ProductInput,
     SearchRequest,
     _freeze_artifact_port_map,
     _freeze_artifact_refs,
@@ -19,13 +21,21 @@ def ref(i="r1"):
 
 def test_inspection_request_freezes_and_validates():
     p = {"nested": {"items": [1]}}
-    r = InspectionRequest(ref(), p)
+    product = populated_product()
+    source = ProductInput(
+        ArtifactRef(
+            "r1", product.schema_id, product.schema_version, None, "manifest", "locator"
+        ),
+        product,
+    )
+    r = InspectionRequest(source, p)
+    assert r.source is source
     p["nested"]["items"].append(2)
     assert r.parameters["nested"]["items"] == (1,)
     with pytest.raises(TypeError):
         r.parameters["nested"]["x"] = 1
     with pytest.raises(dataclasses.FrozenInstanceError):
-        r.source = ref("x")
+        r.source = source
 
 
 def test_inspection_invalid_source():
