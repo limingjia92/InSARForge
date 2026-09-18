@@ -1,7 +1,7 @@
 import hashlib
 import os
 import stat
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from insarforge.products.assets import AssetKind, AssetLocationKind, NativeAsset
@@ -16,6 +16,10 @@ SID = "insarforge:directory-member-manifest"
 _NOFOLLOW_SUPPORTED = hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd
 
 
+class _RootKindMismatch(OSError):
+    pass
+
+
 @contextmanager
 def _open_directory(path, *, dir_fd=None):
     # Fail closed on platforms without descriptor-relative no-follow support.
@@ -26,6 +30,27 @@ def _open_directory(path, *, dir_fd=None):
         yield fd
     finally:
         os.close(fd)
+
+
+@contextmanager
+def _open_root(path):
+    """Anchor at the filesystem root, then open every component no-follow.
+
+    This includes the supplied manifest anchor: no ancestor symlink is trusted.
+    Descriptors pin traversal, not a transactional filesystem snapshot.
+    """
+    if not path.is_absolute() or ".." in path.parts:
+        raise OSError("directory root must have an unambiguous absolute path")
+    with ExitStack() as stack:
+        fd = stack.enter_context(_open_directory(path.anchor))
+        for part in path.parts[1:-1]:
+            fd = stack.enter_context(_open_directory(part, dir_fd=fd))
+        name = path.parts[-1] if len(path.parts) > 1 else "."
+        info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        if not stat.S_ISDIR(info.st_mode):
+            raise _RootKindMismatch("directory root kind mismatch")
+        fd = stack.enter_context(_open_directory(name, dir_fd=fd))
+        yield fd
 
 
 @contextmanager
@@ -160,27 +185,16 @@ def validate_directory_members(
         else Path(asset.location.value)
     )
     try:
-        root_info = root.lstat()
+        with _open_root(root) as root_fd:
+            _validate_inventory(root_fd, manifest, add)
     except FileNotFoundError:
         add(ValidationIssueKind.ERROR, "validation:directory-root-missing", str(root))
-        return ProductValidationReport(tuple(issues))
-    except OSError:
-        add(
-            ValidationIssueKind.UNVERIFIED,
-            "validation:directory-io-unverified",
-            str(root),
-        )
-        return ProductValidationReport(tuple(issues))
-    if not stat.S_ISDIR(root_info.st_mode):
+    except _RootKindMismatch:
         add(
             ValidationIssueKind.ERROR,
             "validation:directory-root-kind-mismatch",
             str(root),
         )
-        return ProductValidationReport(tuple(issues))
-    try:
-        with _open_directory(root) as root_fd:
-            _validate_inventory(root_fd, manifest, add)
     except OSError:
         add(
             ValidationIssueKind.UNVERIFIED,
@@ -245,6 +259,12 @@ def _validate_inventory(root_fd, manifest, add):
                 try:
                     with _open_member(root_fd, path) as stream:
                         info = os.fstat(stream.fileno())
+                        if info.st_nlink > 1 and a[1].st_nlink <= 1:
+                            add(
+                                ValidationIssueKind.UNVERIFIED,
+                                "validation:directory-hardlink-unverified",
+                                path,
+                            )
                         h = hashlib.sha256() if verify_hash else None
                         if h is not None:
                             for chunk in iter(lambda: stream.read(1024 * 1024), b""):

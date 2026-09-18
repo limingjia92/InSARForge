@@ -36,9 +36,9 @@ def _validate_payload(value, *, json_only=False):
         raise TypeError("unsupported semantic payload: Enum")
     if isinstance(value, (MutableMapping, MutableSequence, MutableSet, bytearray)):
         raise TypeError("mutable semantic payload")
-    if value is None or isinstance(value, (str, bool, int)):
+    if value is None or type(value) in (str, bool, int):
         return
-    if isinstance(value, float):
+    if type(value) is float:
         if not math.isfinite(value):
             raise ValueError("semantic payload float must be finite")
         return
@@ -50,7 +50,7 @@ def _validate_payload(value, *, json_only=False):
         for key, item in value.items():
             if isinstance(key, Enum):
                 raise TypeError("unsupported semantic payload: Enum")
-            if not isinstance(key, str):
+            if type(key) is not str:
                 raise TypeError("mapping keys must be strings")
             _validate_payload(item, json_only=True)
         return

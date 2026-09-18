@@ -65,12 +65,12 @@ def _seq(value, name):
 
 def _plain(v):
     if isinstance(v, Mapping):
-        if any(not isinstance(k, str) for k in v):
+        if any(type(k) is not str for k in v):
             raise TypeError("keys")
         return {k: _plain(x) for k, x in v.items()}
     if isinstance(v, (tuple, list)):
         return [_plain(x) for x in v]
-    if isinstance(v, (str, int, float, bool)) or v is None:
+    if type(v) in (str, int, float, bool) or v is None:
         return v
     raise TypeError("unsupported JSON value")
 

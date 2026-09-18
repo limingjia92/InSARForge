@@ -187,13 +187,13 @@ def test_final_native_asset_explicit_identity_projection():
     assert not hasattr(asset, "role")
     identities = {asset.asset_id: "synthetic:content"}
     material = product_semantic_material(product, asset_content_identities=identities)
-    assert material["product"]["assets"] == [
+    assert material["product"]["assets"] == (
         {
             "asset_id": asset.asset_id,
             "asset_kind": asset.asset_kind.value,
             "content_identity": "synthetic:content",
-        }
-    ]
+        },
+    )
     original = content(product)
     assert original is not None
     assert (
@@ -267,13 +267,13 @@ def test_exact_final_geometry_semantic_projection():
     assert set(projected["axes"][0]) == {f.name for f in fields(geometry.axes[0])}
     assert projected["grid_definition"]["value"] == {
         "format_id": geometry.grid_definition.value.format_id,
-        "parameters": {"nested": {"values": [1, 2], "text": "测试"}},
+        "parameters": {"nested": {"values": (1, 2), "text": "测试"}},
     }
     assert projected["reference"] == {
         "status": "known",
         "value": geometry.reference.value.semantic_digest,
         "reason_code": None,
-        "evidence_semantic_digests": [],
+        "evidence_semantic_digests": (),
     }
     assert PRODUCT_CONTENT_DIGEST_ALGORITHM_REVISION == 1
 
@@ -500,7 +500,7 @@ def test_extension_mapping_order_and_empty_determinism():
     assert content(first) is not None
     assert content(first) == content(second)
     assert material(first)["extensions"] == {
-        "future-tool:data": {"z": [1, 2], "a": 1},
+        "future-tool:data": {"z": (1, 2), "a": 1},
         "vendor:flag": True,
     }
     assert content(product) is not None
@@ -554,21 +554,21 @@ def test_v2_content_projection_has_only_content_and_fixed_helper_revision():
         "semantic_metadata",
         "lineage",
     }
-    assert projected["product"]["acquisition_semantic_digests"] == [
+    assert projected["product"]["acquisition_semantic_digests"] == (
         "semantic:first",
         "semantic:second",
-    ]
-    assert projected["product"]["lineage"] == [
+    )
+    assert projected["product"]["lineage"] == (
         {"role": "role:z", "artifact_semantic_digest": "semantic:first"},
         {"role": "role:a", "artifact_semantic_digest": "semantic:second"},
-    ]
+    )
     assert projected["product"]["semantic_metadata"]["quality"] == {
         "status": "known",
-        "value": {"array": [1, 2], "n": 1},
+        "value": {"array": (1, 2), "n": 1},
         "reason_code": "reason:quality",
-        "evidence_semantic_digests": ["semantic:first", "semantic:second"],
+        "evidence_semantic_digests": ("semantic:first", "semantic:second"),
     }
-    assert projected["extensions"] == {"vendor:quality": {"array": [2, 1]}}
+    assert projected["extensions"] == {"vendor:quality": {"array": (2, 1)}}
     # Product schema literals cannot vary in a valid model; assert exclusion here.
     assert not {
         "schema_id",

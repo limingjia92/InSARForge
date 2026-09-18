@@ -168,7 +168,7 @@ def product_semantic_material(
             }
             for layer in product.layers
         ]
-        return {
+        material = {
             "schema_id": PRODUCT_SEMANTIC_MATERIAL_SCHEMA_ID,
             "schema_version": PRODUCT_SEMANTIC_MATERIAL_SCHEMA_VERSION,
             "product": {
@@ -194,6 +194,7 @@ def product_semantic_material(
         }
     except ValueError:
         return None
+    return freeze_json(material)
 
 
 def product_content_digest(

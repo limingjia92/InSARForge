@@ -141,7 +141,8 @@ def test_root_terminal(tmp_path, monkeypatch, case):
             raise PermissionError("root denied")
 
         if case == "io":
-            monkeypatch.setattr(Path, "lstat", fail)
+            # Root classification now uses anchored, no-follow stat.
+            monkeypatch.setattr(os, "stat", fail)
         else:
             monkeypatch.setattr(verifier, "_open_directory", fail)
     monkeypatch.setattr(os, "scandir", forbidden)

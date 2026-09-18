@@ -388,7 +388,15 @@ def test_identity_rejects_not_applicable_only_at_owner(builder, field):
 @pytest.mark.parametrize("builder,field", IDENTITY_OWNERS)
 @pytest.mark.parametrize("payload", [1, True, 1.5, (), SyntheticString("digest")])
 def test_identity_known_requires_exact_string(builder, field, payload):
-    value = sv(payload)  # Valid generic payload, invalid at these string owners.
+    if isinstance(payload, SyntheticString):
+        # PRO-P41-01 rejects subclasses at the generic boundary as well.
+        with pytest.raises(TypeError, match="unsupported semantic payload"):
+            sv(payload)
+        value = sv("digest")
+        # Retain the independent owner-defense check on a fresh test-only value.
+        object.__setattr__(value, "value", payload)
+    else:
+        value = sv(payload)  # Valid generic payload, invalid at string owners.
     with pytest.raises(TypeError, match=field):
         builder(**{field: value})
 

@@ -7,7 +7,7 @@ from insarforge.contracts.values import FrozenJSON, freeze_json, validate_identi
 
 def _validate_extension_key(key: str) -> str:
     """Validate namespace:local spelling without interpreting its owner."""
-    if not isinstance(key, str):
+    if type(key) is not str:
         raise TypeError("extension key must be a string")
     if key.count(":") != 1:
         raise ValueError("extension key must contain exactly one colon")

@@ -31,16 +31,21 @@ def validate_identifier(value: str) -> str:
 
 
 def freeze_json(value) -> FrozenJSON:
-    if value is None or isinstance(value, (bool, int, str)):
+    """Own JSON containers; only exact built-in scalars and keys are safe.
+
+    Scalar subclasses may retain caller state or override comparison behavior.
+    Reject them instead of retaining aliases or silently coercing logical types.
+    """
+    if value is None or type(value) in (bool, int, str):
         return value
-    if isinstance(value, float):
+    if type(value) is float:
         if not math.isfinite(value):
             raise ValueError("float must be finite")
         return value
     if isinstance(value, Mapping):
         frozen = {}
         for key, item in value.items():
-            if not isinstance(key, str):
+            if type(key) is not str:
                 raise TypeError("mapping keys must be strings")
             frozen[key] = freeze_json(item)
         return MappingProxyType(frozen)

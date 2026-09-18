@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 from pathlib import Path
 
 from insarforge.products.assets import AssetKind, AssetLocationKind
@@ -63,9 +65,9 @@ def validate_product_assets(product: ProductDraft | Product) -> ProductValidatio
             continue
         actual_kind = (
             AssetKind.FILE
-            if path.is_file()
+            if stat.S_ISREG(info.st_mode)
             else AssetKind.DIRECTORY
-            if path.is_dir()
+            if stat.S_ISDIR(info.st_mode)
             else None
         )
         if actual_kind is not asset.asset_kind:
@@ -136,8 +138,47 @@ def validate_product_assets(product: ProductDraft | Product) -> ProductValidatio
         try:
             digest = hashlib.sha256()
             with path.open("rb") as stream:
+                opened = os.fstat(stream.fileno())
+                if not stat.S_ISREG(opened.st_mode):
+                    issues.append(
+                        _issue(
+                            ValidationIssueKind.ERROR,
+                            "validation:asset-kind-mismatch",
+                            location,
+                            {"expected_kind": "file", "actual_kind": "other"},
+                        )
+                    )
+                    continue
+                if asset.size_bytes is not None and opened.st_size != asset.size_bytes:
+                    issues.append(
+                        _issue(
+                            ValidationIssueKind.ERROR,
+                            "validation:file-size-mismatch",
+                            location,
+                            {
+                                "expected_size": asset.size_bytes,
+                                "actual_size": opened.st_size,
+                            },
+                        )
+                    )
+                    continue
+                size_read = 0
                 while chunk := stream.read(1024 * 1024):
+                    size_read += len(chunk)
                     digest.update(chunk)
+                after = os.fstat(stream.fileno())
+                if (
+                    opened.st_mode,
+                    opened.st_size,
+                    opened.st_mtime_ns,
+                    opened.st_ctime_ns,
+                ) != (
+                    after.st_mode,
+                    after.st_size,
+                    after.st_mtime_ns,
+                    after.st_ctime_ns,
+                ) or size_read != opened.st_size:
+                    raise OSError("asset changed during verification")
         except OSError:
             issues.append(
                 _issue(
