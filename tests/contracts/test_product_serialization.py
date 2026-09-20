@@ -1003,10 +1003,27 @@ def test_v2_reference_collections_require_arrays_of_typed_objects(
 
 @pytest.mark.parametrize("field", ["acquisition_refs", "lineage"])
 @pytest.mark.parametrize("via_bytes", [False, True])
-def test_v2_duplicate_reference_keys_are_rejected_by_owner(field, via_bytes):
+def test_v2_duplicate_reference_keys_follow_owner_rules(field, via_bytes):
     value = v2_wire()
     value[field].append(value[field][0])
-    with pytest.raises(ValueError, match=field):
+    if field == "acquisition_refs":
+        with pytest.raises(ValueError, match=field):
+            decode_wire(value, via_bytes)
+    else:
+        result = decode_wire(value, via_bytes)
+        assert len(result.lineage) == 3
+        assert result.lineage[0] == result.lineage[2]
+
+
+@pytest.mark.parametrize("via_bytes", [False, True])
+def test_v2_conflicting_lineage_reference_is_rejected(via_bytes):
+    import copy
+
+    value = v2_wire()
+    duplicate = copy.deepcopy(value["lineage"][0])
+    duplicate["artifact"]["locator"] = "synthetic:conflict"
+    value["lineage"].append(duplicate)
+    with pytest.raises(ValueError, match="lineage"):
         decode_wire(value, via_bytes)
 
 

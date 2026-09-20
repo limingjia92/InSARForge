@@ -249,10 +249,13 @@ class Product:
         lineage = tuple(self.lineage)
         if any(type(entry) is not LineageEntry for entry in lineage):
             raise TypeError("lineage")
-        if len({(entry.role, entry.artifact.record_id) for entry in lineage}) != len(
-            lineage
-        ):
-            raise ValueError("lineage")
+        # ADR0015: preserve occurrences, but reject inconsistent references.
+        lineage_refs = {}
+        for entry in lineage:
+            key = (entry.role, entry.artifact.record_id)
+            if key in lineage_refs and lineage_refs[key] != entry.artifact:
+                raise ValueError("lineage")
+            lineage_refs[key] = entry.artifact
         for name, value in (
             ("lineage", lineage),
             ("assets", assets),

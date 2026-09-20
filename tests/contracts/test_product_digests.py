@@ -828,3 +828,13 @@ def test_v2_metadata_evidence_uses_semantic_identity_not_persistence():
     )
     assert content(changed) == content(product)
     assert product_manifest_digest(changed) != product_manifest_digest(product)
+
+
+def test_v2_lineage_occurrence_count_and_order_are_semantic():
+    product = identity_product()
+    first, second = product.lineage
+    repeated = replace(product, lineage=(first, second, first))
+    reordered = replace(product, lineage=(first, first, second))
+    assert len({content(product), content(repeated), content(reordered)}) == 3
+    assert content(repeated) is not None
+    assert product_from_manifest_bytes(product_to_manifest_bytes(repeated)) == repeated

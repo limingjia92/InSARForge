@@ -1149,7 +1149,7 @@ def test_product_lineage_order_ownership_roles_and_weak_identity(container):
 
 
 @pytest.mark.parametrize("changed_details", [False, True])
-def test_product_lineage_rejects_duplicate_role_and_record_id(changed_details):
+def test_product_lineage_repeated_occurrences_reject_only_conflicts(changed_details):
     first = LineageEntry("synthetic:role", reference_artifact())
     ref = (
         replace(
@@ -1163,8 +1163,14 @@ def test_product_lineage_rejects_duplicate_role_and_record_id(changed_details):
         else first.artifact
     )
     duplicate = LineageEntry(first.role, ref)
-    with pytest.raises(ValueError, match="lineage"):
-        replace(populated_product(), lineage=[first, duplicate])
+    if changed_details:
+        with pytest.raises(ValueError, match="lineage"):
+            replace(populated_product(), lineage=[first, duplicate])
+    else:
+        assert replace(populated_product(), lineage=[first, duplicate]).lineage == (
+            first,
+            duplicate,
+        )
 
 
 def test_product_lineage_requires_exact_lineage_entry_members():
@@ -1269,3 +1275,20 @@ def test_product_constructor_does_not_resolve_or_compute(monkeypatch):
     assert value.lineage == tuple(lineage)
     assert value.acquisition_refs == (ref,)
     assert value.semantic_metadata["quality"] is metadata["quality"]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"schema_id": "synthetic:other"},
+        {"schema_version": 3},
+        {"semantic_digest": None},
+        {"manifest_digest": "manifest:other"},
+        {"locator": "synthetic:elsewhere"},
+    ],
+)
+def test_lineage_same_key_rejects_each_reference_conflict(changes):
+    first = LineageEntry("synthetic:role", reference_artifact())
+    other = LineageEntry(first.role, replace(first.artifact, **changes))
+    with pytest.raises(ValueError, match="lineage"):
+        replace(populated_product(), lineage=(first, other))
