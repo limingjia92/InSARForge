@@ -2,7 +2,7 @@
 
 import hashlib
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
@@ -109,7 +109,7 @@ def ref(name="a", digest=None):
 @dataclass(frozen=True)
 class Prepared:
     semantic_execution_identity: SemanticValue
-    preparation: object = freeze_json({})
+    preparation: object = field(default_factory=lambda: freeze_json({}))
 
 
 def prepared(**changes):
