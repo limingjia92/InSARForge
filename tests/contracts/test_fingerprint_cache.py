@@ -109,7 +109,7 @@ def ref(name="a", digest=None):
 @dataclass(frozen=True)
 class Prepared:
     semantic_execution_identity: SemanticValue
-    preparation: object = None
+    preparation: object = freeze_json({})
 
 
 def prepared(**changes):

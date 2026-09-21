@@ -666,6 +666,8 @@ def test_runtime_import_boundaries():
             "core/runtime.py",
             "core/runtime_plan.py",
             "core/_runtime_artifacts.py",
+            "core/_runtime_inputs.py",
+            "provenance/runtime_evidence.py",
             "provenance/workspace.py",
             "contracts/record_serialization.py",
         )

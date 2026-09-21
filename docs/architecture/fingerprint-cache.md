@@ -124,3 +124,18 @@ The future runtime must maintain stability between observation and use.
 
 Focused tests: tests/contracts/test_fingerprint_cache.py. Existing planning, Product,
 registry, directory validation and architecture suites remain applicable.
+
+## Runtime verification boundary (ADR0016)
+
+Pure fingerprint/cache functions consume verified evidence; an arbitrary supplied
+ArtifactRef digest does not establish verification. The runtime checks exact safe
+manifest bytes and recomputes artifact identity with complete recipe-aware
+ArtifactEvidence and current asset observations. It keeps original references for
+ProductInput/lineage and uses a separate effective identity for cache decisions.
+Insufficient material yields no reuse and propagates weak identity; conflicting
+declared strong identity is rejected. Product content digest alone is insufficient.
+
+Required runtime input/output port/profile checks use affirmative full verification,
+consistent with candidate acceptance. Weak asset identity may still allow otherwise
+valid execution without cache; it is distinct from unresolved required compatibility.
+Only attributed matching damaged results invoke restart safety restrictions.

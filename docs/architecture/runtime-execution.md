@@ -20,9 +20,21 @@ Runtime(..., max_workers=1) is the serial reference. Larger limits run the same
 coordinator path with bounded thread workers. Admission accounts for CPU/GPU and
 declared memory against the supplied budget; it is not an OS RSS limit.
 
-run(plan, external_manifests=..., config_refs=...) accepts explicitly supplied
-manifest bytes keyed by declared external record ID. Typed port codecs validate
-them; the runtime never fetches arbitrary external locators. OutputRef expands
+run(plan, external_manifests=..., external_evidence=..., config_refs=...) accepts explicitly supplied
+manifest bytes keyed by declared external record ID. Before durable copying, the
+runtime strictly decodes the exact supported record and checks persistence safety.
+Typed port codecs then affirm required schema/profile obligations before invoke;
+the runtime never fetches arbitrary external locators.
+
+external_evidence maps record IDs to immutable
+provenance.runtime_evidence.ArtifactEvidence(artifact, producer_fingerprint,
+output_port, ordered_inputs). Supply the original producing recipe and complete
+ordered inputs, not a Product content digest masquerading as an artifact digest.
+Current manifest/content/assets are recomputed against that material. A matching
+local committed receipt can supply evidence automatically. Without sufficient
+evidence, execution uses a non-reusable effective identity; the original reference
+is preserved in family inputs and lineage. Contradictory strong evidence is rejected.
+Cross-workspace verified imports do not load their historical producer plugin. OutputRef expands
 the original output order. Repeated inputs retain their order and multiplicity.
 ADR0015 permits identical repeated Product lineage entries and rejects
 conflicting same-role/same-record references.
@@ -43,8 +55,10 @@ Workers receive an isolated ExecutionContext; they must close output writers
 before return and write only in their own attempt area. Plugins are trusted
 cooperative Python code, not sandboxed. Inputs are read-only. The coordinator
 checks output ownership, rejects symlinks/hardlinks, rechecks input integrity,
-validates all outputs, flushes files/manifests and atomically publishes result.json
-last. Only that receipt commits success. Cache indexes and task/run summaries are
+validates all outputs, flushes new owned files/manifests and atomically publishes result.json
+last. Exact verified input assets may be shared read-only by derived Products;
+they are observed without copying, mutation or fsync. Historical cache observation
+also does not flush old assets. Only that receipt commits success. Cache indexes and task/run summaries are
 projections; missing indexes do not negate a valid receipt.
 
 Runtime records have closed versioned JSON schemas and reuse standard
@@ -80,3 +94,25 @@ This module establishes P4.2 engineering semantics. It does not implement the
 P4.3 six-family Fake E2E, real SAR processing, distributed scheduling, databases,
 cloud/object storage or native checkpoint recovery. No InSAR scientific defaults
 or Phase 3 configuration behavior are changed.
+
+## Runtime evidence compatibility and interruption
+
+Workspace records now use explicit schema version 2. The earlier v1 lacks complete
+preparation/input/adoption evidence and is refused for runtime recovery/reuse;
+unknown versions are refused too. Existing bytes are not migrated or rewritten.
+Product v2 and WorkflowPlan v1 remain unchanged. Old safe manifests can be imported
+into a new workspace with complete explicit ArtifactEvidence, or run without reuse
+when evidence is insufficient.
+
+PreparationEvidence serializes and reconstructs the full semantic identity,
+ordered evidence refs and object-shaped preparation plus actual allocation facts
+in started records. Resolution records retain adopted recipe/execution identity
+and safe cache/preflight reasons. Cache-only and mixed resume chains compare these
+facts before accepting the current prepared identity. Unattributed damaged receipts
+are rejected locally and cannot prevent an unrelated UNSAFE task's first execution.
+
+Handled KeyboardInterrupt closes interrupted state after cooperative worker
+shutdown and before writer-lock release, then propagates. Already committed
+receipts survive; unresolved actual attempts consume scope budget. True process
+death is handled by a later append-only recovery. No thread killing is attempted.
+See ADR0016 and the independent-audit regression suite for boundary tests.

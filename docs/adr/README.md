@@ -21,3 +21,5 @@ Baseline: `9c8b2ba1bb5b44e9aca274b0f29f3df692206fc9`. Freeze: `P4.0-FREEZE-1`, 2
 - [ADR-0014](0014-resolved-product-inputs-in-family-requests.md) — ACCEPTED — Resolved Product Inputs in Family Requests
 
 - [ADR-0015](0015-lineage-preserves-repeated-input-occurrences.md) — ACCEPTED — Supersedes only ADR0012 duplicate-lineage restriction: identical occurrences are preserved; conflicting same-key references remain invalid.
+
+- [ADR-0016](0016-runtime-verification-and-recovery-evidence.md) — Authorized implementation clarification — Verified runtime inputs, read-only assets and versioned recovery evidence; no frozen contract superseded.

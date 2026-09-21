@@ -68,8 +68,11 @@ def read_local(path):
         return f.read()
 
 
-def observe(asset, *, owned=None):
+def observe(asset, *, owned=None, shared=(), flush=False):
     path = asset_path(asset)
+    if owned is not None and asset in shared:
+        # Exact verified read-only input descriptor; never flush/re-own it.
+        return observe(asset)
     if owned is not None:
         if path is None or not path.is_relative_to(owned):
             raise OutputValidationError("OUTPUT_NOT_OWNED")
@@ -91,7 +94,7 @@ def observe(asset, *, owned=None):
                         not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
                     ):
                         raise OutputValidationError("OUTPUT_UNSAFE")
-    if owned is not None:
+    if owned is not None and flush:
         # The adapter must close all writers before returning. Flush the owned
         # bytes before the coordinator publishes the receipt commit point.
         members = (
@@ -116,7 +119,7 @@ def observe(asset, *, owned=None):
 
 def validate_record(record, port):
     report = port.validator.validate(record, port.schema, port.profile)
-    if type(report) is not ProductValidationReport or not report.is_valid:
+    if type(report) is not ProductValidationReport or not report.is_fully_verified:
         raise OutputValidationError("OUTPUT_CONTRACT")
     if (record.schema_id, record.schema_version) != (
         port.schema.schema_id,
@@ -143,6 +146,7 @@ def finalize(
     implementation,
     inputs,
     context,
+    shared=(),
 ):
     if type(outcome) is not TaskOutcome or set(outcome.outputs) != {
         p.port_id for p in binding.outputs
@@ -188,7 +192,8 @@ def finalize(
             evidence = ()
             if type(record) is Product:
                 evidence = tuple(
-                    observe(a, owned=context.artifact_dir) for a in record.assets
+                    observe(a, owned=context.artifact_dir, shared=shared, flush=True)
+                    for a in record.assets
                 )
                 if not validate_product_assets(record).is_valid:
                     raise OutputValidationError("OUTPUT_ASSET_INVALID")
@@ -225,7 +230,7 @@ def finalize(
             pending.append((port.port_id, ref, raw))
     native = []
     for asset in outcome.evidence:
-        observe(asset, owned=context.attempt_dir)
+        observe(asset, owned=context.attempt_dir, flush=True)
         _validate_native_evidence(asset)
         native.append(_e(asset))
     for port, ref, raw in pending:
@@ -272,7 +277,7 @@ def _validate_native_evidence(asset):
                 raise OutputValidationError("NATIVE_EVIDENCE_UNSAFE")
 
 
-def candidate_from_receipt(store, location):
+def candidate_from_receipt(store, location, *, commit_only=False):
     receipt = store.read(location, "receipt")
     prefix = location.rsplit("/", 1)[0]
     started = store.read(prefix + "/started.json", "started")
@@ -286,8 +291,28 @@ def candidate_from_receipt(store, location):
     ):
         if receipt[key] != started[key]:
             raise InputValidationError("RECEIPT_START_MISMATCH")
-    if started["attempt_id"] != prefix.rsplit("/", 1)[-1]:
+    if (
+        started["attempt_id"] != prefix.rsplit("/", 1)[-1]
+        or started["run_id"] != prefix.split("/")[1]
+    ):
         raise InputValidationError("RECEIPT_ATTEMPT")
+    from insarforge.contracts.context import ResourceAllocation
+    from insarforge.core._runtime_inputs import shared_assets
+    from insarforge.core.fingerprints import execution_identity
+    from insarforge.provenance.runtime_evidence import PreparationEvidence
+
+    prepared = PreparationEvidence.from_dict(started["prepared"])
+    a = started["allocation"]
+    allocation = ResourceAllocation(a["cpu_cores"], a["memory_bytes"], a["gpu_count"])
+    if execution_identity(prepared, allocation).value != started["execution"]:
+        raise InputValidationError("RECEIPT_EXECUTION_EVIDENCE")
+    run = store.read("runs/" + started["run_id"] + "/run.json", "run")
+    if (
+        run["scope_id"] != started["scope_id"]
+        or run["plan_digest"] != started["plan_digest"]
+    ):
+        raise InputValidationError("RECEIPT_RUN_BINDING")
+    shared = shared_assets(store, started["resolved_inputs"])
     outputs = {}
     manifest_digests = {}
     for port, refs in receipt["outputs"].items():
@@ -310,15 +335,42 @@ def candidate_from_receipt(store, location):
                 raise InputValidationError("RECEIPT_PRODUCING_ATTEMPT")
             evidence = (
                 tuple(
-                    observe(a, owned=store.path(prefix + "/artifacts"))
+                    observe(a, owned=store.path(prefix + "/artifacts"), shared=shared)
                     for a in record.assets
                 )
                 if type(record) is Product
                 else ()
             )
+            from insarforge.core._runtime_inputs import verify
+            from insarforge.provenance.runtime_evidence import ArtifactEvidence
+
+            if any(
+                not e.identity.reusable
+                for e in evidence
+                if e.asset.integrity is not None
+                or e.asset.member_manifest_ref is not None
+            ):
+                raise InputValidationError("RECEIPT_ASSET_IDENTITY")
+            if receipt["fingerprint"] is None and ref.semantic_digest is not None:
+                raise InputValidationError("RECEIPT_WEAK_RECIPE")
+            if receipt["fingerprint"] is not None:
+                proof = ArtifactEvidence(
+                    ref,
+                    receipt["fingerprint"],
+                    port,
+                    {
+                        p: tuple(_artifact_from_dict(v["artifact"]) for v in values)
+                        for p, values in started["resolved_inputs"].items()
+                    },
+                )
+                effective = verify(ref, record, proof, evidence)
+                if effective.semantic_digest != ref.semantic_digest:
+                    raise InputValidationError("RECEIPT_SEMANTIC_IDENTITY")
             items.append(CachedOutput(ref, raw, evidence))
         outputs[port] = tuple(items)
         manifest_digests[port] = tuple(x.artifact.manifest_digest for x in items)
+    if commit_only:
+        return receipt
     return CacheCandidate(
         1,
         receipt["fingerprint"],
@@ -329,13 +381,20 @@ def candidate_from_receipt(store, location):
     )
 
 
-def resolve_inputs(store, task, binding, produced, external):
+def resolve_inputs(
+    store, task, binding, produced, external, external_prefix, external_evidence
+):
+    from insarforge.core._runtime_inputs import local_evidence, resolved_entry, verify
+
+    entries = {}
+    effective_refs = {}
     inputs = {}
-    refs = {}
     from insarforge.contracts.execution import OutputRef
 
     for port in binding.inputs:
         members = []
+        entries[port.port_id] = []
+        effective_refs[port.port_id] = []
         for source in task.inputs[port.port_id]:
             sources = (
                 produced[source.task_id][source.port]
@@ -343,10 +402,17 @@ def resolve_inputs(store, task, binding, produced, external):
                 else (source,)
             )
             for ref in sources:
+                from insarforge.provenance.workspace import key
+
+                location = (
+                    external_prefix + "/external/" + key(ref.record_id) + ".json"
+                    if ref.record_id in external
+                    else ref.locator
+                )
                 raw = (
                     external[ref.record_id]
                     if ref.record_id in external
-                    else store.read_bytes(ref.locator)
+                    else store.read_bytes(location)
                 )
                 if sha(raw) != ref.manifest_digest:
                     raise InputValidationError("INPUT_MANIFEST_HASH")
@@ -354,25 +420,40 @@ def resolve_inputs(store, task, binding, produced, external):
                 if type(value) is not ResolvedInput or value.artifact != ref:
                     raise InputValidationError("INPUT_CODEC")
                 validate_record(value.value, port)
+                observations = []
                 if type(value.value) is Product:
                     if not validate_product_assets(value.value).is_valid:
                         raise InputValidationError("INPUT_ASSET_INVALID")
                     for a in value.value.assets:
                         observation = observe(a)
+                        observations.append(observation)
                         if (
                             a.integrity is not None or a.member_manifest_ref is not None
                         ) and not observation.identity.reusable:
                             raise InputValidationError("INPUT_ASSET_INTEGRITY")
+                proof = (
+                    external_evidence.get(ref.record_id)
+                    if ref.record_id in external
+                    else local_evidence(store, ref)
+                )
+                effective = verify(ref, value.value, proof, observations)
+                entries[port.port_id].append(
+                    resolved_entry(ref, location, effective, proof)
+                )
+                effective_refs[port.port_id].append(effective)
                 members.append(value)
         if len(members) < port.min_count or (
             port.max_count is not None and len(members) > port.max_count
         ):
             raise InputValidationError("INPUT_COUNT")
         inputs[port.port_id] = tuple(members)
-        refs[port.port_id] = tuple(m.artifact for m in members)
     from types import MappingProxyType
 
-    return MappingProxyType(inputs), refs
+    return (
+        MappingProxyType(inputs),
+        {p: tuple(v) for p, v in effective_refs.items()},
+        entries,
+    )
 
 
 def output_data(outputs):

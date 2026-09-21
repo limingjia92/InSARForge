@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import insarforge
-from insarforge.contracts._execution_json import plain
+from insarforge.contracts._execution_json import canonical, decode, plain
 from insarforge.contracts.context import ExecutionContext
 from insarforge.contracts.errors import (
     ContractError,
@@ -25,7 +25,6 @@ from insarforge.contracts.execution import (
     TaskState,
     WorkflowPlan,
     _artifact_dict,
-    _artifact_from_dict,
 )
 from insarforge.contracts.record_serialization import record_from_bytes
 from insarforge.core._runtime_artifacts import (
@@ -35,6 +34,7 @@ from insarforge.core._runtime_artifacts import (
     resolve_inputs,
     sha,
 )
+from insarforge.core._runtime_inputs import local_evidence, shared_assets
 from insarforge.core.cache import can_publish_cache, validate_cache_candidate
 from insarforge.core.content_identity import code_content_identity, engine_code_identity
 from insarforge.core.fingerprints import (
@@ -43,6 +43,7 @@ from insarforge.core.fingerprints import (
     task_fingerprint,
 )
 from insarforge.core.runtime_plan import RunResult, allocation, dry_run, validate_task
+from insarforge.provenance.runtime_evidence import ArtifactEvidence, PreparationEvidence
 from insarforge.provenance.workspace import Workspace, key
 
 
@@ -126,9 +127,22 @@ class Runtime:
     def dry_run(self, plan):
         return dry_run(plan, self.registry, budget=self.budget)
 
-    def run(self, plan, *, external_manifests=None, config_refs=()):
+    def run(
+        self, plan, *, external_manifests=None, external_evidence=None, config_refs=()
+    ):
         with self.store.writer():
-            return self._run(plan, dict(external_manifests or {}), None, config_refs)
+            self._current_run = None
+            try:
+                return self._run(
+                    plan,
+                    dict(external_manifests or {}),
+                    None,
+                    config_refs,
+                    dict(external_evidence or {}),
+                )
+            except KeyboardInterrupt:
+                self._close_interrupted()
+                raise
 
     def resume(self, source_run):
         if (
@@ -140,6 +154,8 @@ class Runtime:
         with self.store.writer():
             prefix = "runs/" + source_run
             original = self.store.read(prefix + "/run.json", "run")
+            if original["run_id"] != source_run:
+                raise WorkflowStateError("RESUME_RUN_BINDING")
             plan = WorkflowPlan.from_json(self.store.read_bytes(prefix + "/plan.json"))
             if plan.digest != original["plan_digest"]:
                 raise WorkflowStateError("RESUME_PLAN_CHANGED")
@@ -149,7 +165,14 @@ class Runtime:
                 )
                 for ref in plan.external_inputs
             }
-            return self._run(plan, external, original, ())
+            proofs = decode(self.store.read_bytes(prefix + "/external-evidence.json"))
+            proofs = {k: ArtifactEvidence.from_dict(v) for k, v in proofs.items()}
+            self._current_run = None
+            try:
+                return self._run(plan, external, original, (), proofs)
+            except KeyboardInterrupt:
+                self._close_interrupted()
+                raise
 
     def _history(self, scope):
         histories = {}
@@ -192,28 +215,9 @@ class Runtime:
             valid = False
             if self.store.path(parent + "/result.json").exists():
                 try:
-                    receipt = self.store.read(parent + "/result.json", "receipt")
-                    if any(
-                        receipt[k] != started[k]
-                        for k in (
-                            "attempt_id",
-                            "task_id",
-                            "scope_id",
-                            "fingerprint",
-                            "execution",
-                            "inputs",
-                        )
-                    ):
-                        raise WorkflowStateError("RECOVERY_RECEIPT")
-                    for refs in receipt["outputs"].values():
-                        for data in refs:
-                            ref = _artifact_from_dict(data)
-                            if not ref.locator.startswith(parent + "/manifests/"):
-                                raise WorkflowStateError("RECOVERY_LOCATION")
-                            raw = self.store.read_bytes(ref.locator)
-                            if sha(raw) != ref.manifest_digest:
-                                raise WorkflowStateError("RECOVERY_MANIFEST")
-                            record_from_bytes(ref, raw)
+                    candidate_from_receipt(
+                        self.store, parent + "/result.json", commit_only=True
+                    )
                     valid = True
                 except Exception:
                     pass
@@ -230,16 +234,159 @@ class Runtime:
             dict(source_run=source["run_id"], status="INTERRUPTED", attempts=attempts),
         )
 
-    def _run(self, plan, external, source, config_refs):
+    def _close_interrupted(self):
+        # Called only after the pool has awaited cooperative worker shutdown,
+        # and while the sole writer lock is still held.
+        if self._current_run is None:
+            return
+        run_id, plan = self._current_run
+        prefix = "runs/" + run_id
+        states = {t.task_id: "failed" for t in plan.tasks}
+        for location in self.store.inventory(prefix + "/resolutions/*.json"):
+            fact = self.store.read(location, "resolution")
+            states[fact["task_id"]] = fact["state"]
+        for location in self.store.inventory(prefix + "/attempts/*/*/started.json"):
+            parent = location.rsplit("/", 1)[0]
+            start = self.store.read(location, "started")
+            if self.store.path(parent + "/finished.json").exists():
+                finished = self.store.read(parent + "/finished.json", "finished")
+                states[start["task_id"]] = (
+                    "succeeded" if finished["outcome"] == "succeeded" else "failed"
+                )
+                continue
+            receipt = None
+            if self.store.path(parent + "/result.json").exists():
+                try:
+                    candidate_from_receipt(
+                        self.store, parent + "/result.json", commit_only=True
+                    )
+                    receipt = parent + "/result.json"
+                except Exception:
+                    pass
+            self.store.write(
+                parent + "/finished.json",
+                "finished",
+                dict(
+                    attempt_id=start["attempt_id"],
+                    outcome="succeeded" if receipt else "interrupted",
+                    error_code=None if receipt else "INTERRUPTED",
+                    retryable=False,
+                    ended_at=self.clock(),
+                    receipt=receipt,
+                    evidence=[],
+                ),
+            )
+            states[start["task_id"]] = "succeeded" if receipt else "failed"
+        if not self.store.path(prefix + "/summary.json").exists():
+            self.store.write(
+                prefix + "/summary.json",
+                "summary",
+                dict(
+                    run_id=run_id,
+                    status="INTERRUPTED",
+                    states=states,
+                    completion_order=list(self._completion_order),
+                ),
+            )
+
+    def _adopted(self, source, plan):
+        adopted = {}
+        seen = set()
+        while source:
+            if source["run_id"] in seen or source["plan_digest"] != plan.digest:
+                raise WorkflowStateError("RESUME_SOURCE_INVALID")
+            seen.add(source["run_id"])
+            for task in plan.tasks:
+                location = (
+                    "runs/"
+                    + source["run_id"]
+                    + "/resolutions/"
+                    + key(task.task_id)
+                    + ".json"
+                )
+                if not self.store.path(location).exists():
+                    continue
+                resolution = self.store.read(location, "resolution")
+                if resolution["task_id"] != task.task_id:
+                    raise WorkflowStateError("RESUME_RESOLUTION_BINDING")
+                if resolution["state"] != "succeeded" or task.task_id in adopted:
+                    continue
+                receipt = self.store.read(resolution["receipt"], "receipt")
+                started = self.store.read(
+                    resolution["receipt"].rsplit("/", 1)[0] + "/started.json", "started"
+                )
+                parts = resolution["receipt"].split("/")
+                if (
+                    len(parts) != 6
+                    or parts[0] != "runs"
+                    or parts[2] != "attempts"
+                    or parts[5] != "result.json"
+                    or started["run_id"] != parts[1]
+                    or key(started["task_id"]) != parts[3]
+                    or started["attempt_id"] != parts[4]
+                    or resolution["disposition"] not in ("executed", "cache_reused")
+                    or (
+                        resolution["disposition"] == "executed"
+                        and (
+                            started["run_id"] != source["run_id"]
+                            or started["scope_id"] != source["scope_id"]
+                            or started["task_id"] != task.task_id
+                        )
+                    )
+                ):
+                    raise WorkflowStateError("RESUME_RESOLUTION_BINDING")
+                if any(
+                    receipt[k] != started[k]
+                    for k in (
+                        "fingerprint",
+                        "execution",
+                        "scope_id",
+                        "task_id",
+                        "attempt_id",
+                        "inputs",
+                    )
+                ):
+                    raise WorkflowStateError("RESUME_RECEIPT_BINDING")
+                if (receipt["fingerprint"], receipt["execution"]) != (
+                    resolution["fingerprint"],
+                    resolution["execution"],
+                ):
+                    raise WorkflowStateError("RESUME_ADOPTED_IDENTITY")
+                adopted[task.task_id] = (receipt["fingerprint"], receipt["execution"])
+            parent = source["resume_of"]
+            if parent is None:
+                break
+            previous = self.store.read("runs/" + parent + "/run.json", "run")
+            if (
+                previous["run_id"] != parent
+                or previous["scope_id"] != source["scope_id"]
+            ):
+                raise WorkflowStateError("RESUME_SOURCE_INVALID")
+            source = previous
+        return adopted
+
+    def _run(self, plan, external, source, config_refs, external_evidence):
         if type(plan) is not WorkflowPlan or not self.registry.is_sealed:
             raise ContractError("RUNTIME_PLAN_OR_REGISTRY")
         # Whole-plan structural validation already belongs to WorkflowPlan.
         # Static per-task errors become FAILED without preventing independent work.
         if set(external) != {r.record_id for r in plan.external_inputs}:
             raise ContractError("EXTERNAL_INPUT_SET")
+        if not set(external_evidence).issubset(external):
+            raise ContractError("EXTERNAL_EVIDENCE_SET")
         for ref in plan.external_inputs:
             if sha(external[ref.record_id]) != ref.manifest_digest:
                 raise ContractError("EXTERNAL_INPUT_HASH")
+            # Strict safety boundary precedes ALL durable copies.
+            record_from_bytes(ref, external[ref.record_id])
+            if ref.record_id in external_evidence:
+                proof = external_evidence[ref.record_id]
+                if type(proof) is not ArtifactEvidence or proof.artifact != ref:
+                    raise ContractError("EXTERNAL_EVIDENCE_BINDING")
+            else:
+                proof = local_evidence(self.store, ref)
+                if proof is not None:
+                    external_evidence[ref.record_id] = proof
         engine = engine_code_identity(Path(insarforge.__file__).parent)
         implementations = {
             t.task_id: code_content_identity(
@@ -257,10 +404,15 @@ class Runtime:
             ):
                 raise WorkflowStateError("RESUME_REPLAN_REQUIRED")
             self._recover(source)
+        adopted = self._adopted(source, plan) if source else {}
         run_id = uuid.uuid4().hex
         scope = source["scope_id"] if source else uuid.uuid4().hex
         prefix = "runs/" + run_id
         self.store.write_bytes(prefix + "/plan.json", plan.to_json())
+        self.store.write_bytes(
+            prefix + "/external-evidence.json",
+            canonical({k: v.to_dict() for k, v in external_evidence.items()}),
+        )
         for ref in plan.external_inputs:
             self.store.write_bytes(
                 prefix + "/external/" + key(ref.record_id) + ".json",
@@ -288,13 +440,17 @@ class Runtime:
                 ),
             ),
         )
+        self._current_run = (run_id, plan)
+        self._completion_order = []
         history = self._history(scope)
         states = {t.task_id: TaskState.PENDING for t in plan.tasks}
         produced = {}
-        completion = []
+        completion = self._completion_order
         active = {}
         ready_at = {}
         events = 0
+        decisions = {}
+        current_identities = {}
         if source:
             for name, members in history.items():
                 last = members[-1][2]
@@ -329,6 +485,9 @@ class Runtime:
                     receipt=receipt,
                     error_code=error,
                     blocked_by=list(blocked),
+                    fingerprint=current_identities.get(name, (None, None))[0],
+                    execution=current_identities.get(name, (None, None))[1],
+                    cache_reasons=decisions.get(name, []),
                 ),
             )
 
@@ -388,13 +547,28 @@ class Runtime:
                                 )
                             ):
                                 continue
-                            inputs, refs = resolve_inputs(
-                                self.store, task, bound, produced, external
+                            inputs, refs, resolved_entries = resolve_inputs(
+                                self.store,
+                                task,
+                                bound,
+                                produced,
+                                external,
+                                prefix,
+                                external_evidence,
                             )
+                            original_refs = {
+                                p: tuple(v.artifact for v in values)
+                                for p, values in inputs.items()
+                            }
+                            allowed_shared = shared_assets(self.store, resolved_entries)
                             registration = self.registry.resolve(task.plugin_ref)
                             plugin = registration.factory()
                             prepared = bound.handler.prepare(
                                 plugin, inputs, task.semantic_parameters, _Probe(alloc)
+                            )
+                            prepared = PreparationEvidence(
+                                prepared.semantic_execution_identity,
+                                prepared.preparation,
                             )
                             execution = execution_identity(prepared, alloc)
                             recipe = task_fingerprint(
@@ -407,10 +581,18 @@ class Runtime:
                                 allocation=alloc,
                                 resolved_inputs=refs,
                             )
+                            current_identities[name] = (recipe.value, execution.value)
+                            decisions[name] = list(recipe.reasons)
+                            if task.cache_policy is CachePolicy.DISABLED:
+                                decisions[name].append("CACHE_DISABLED")
                             old = history.get(name, [])
                             if source and (
                                 not recipe.reusable
                                 or not execution.reusable
+                                or (
+                                    name in adopted
+                                    and adopted[name] != (recipe.value, execution.value)
+                                )
                                 or any(
                                     (r[1]["fingerprint"], r[1]["execution"])
                                     != (recipe.value, execution.value)
@@ -434,7 +616,15 @@ class Runtime:
                             accepted = None
                             damaged = False
                             for location in dict.fromkeys(candidates):
+                                associated = False
                                 try:
+                                    start_fact = self.store.read(
+                                        location.rsplit("/", 1)[0] + "/started.json",
+                                        "started",
+                                    )
+                                    associated = (
+                                        start_fact["fingerprint"] == recipe.value
+                                    )
                                     receipt = self.store.read(location, "receipt")
                                     if receipt["fingerprint"] != recipe.value:
                                         continue
@@ -466,9 +656,11 @@ class Runtime:
                                     if decision.accepted:
                                         accepted = (location, candidate)
                                         break
-                                    damaged = True
+                                    damaged = damaged or associated
+                                    decisions[name].extend(decision.reasons)
                                 except Exception:
-                                    damaged = True
+                                    damaged = damaged or associated
+                                    decisions[name].append("CACHE_CANDIDATE_UNUSABLE")
                             if accepted:
                                 location, candidate = accepted
                                 produced[name] = {
@@ -483,6 +675,7 @@ class Runtime:
                                 )
                                 made_progress = True
                                 continue
+                            decisions[name].append("CACHE_MISS")
                             if old:
                                 last = old[-1][2]
                                 if (
@@ -535,13 +728,8 @@ class Runtime:
                                 if input_identities(refs) is not None
                                 else None,
                                 allocation=_allocation(alloc),
-                                prepared=dict(
-                                    status=prepared.semantic_execution_identity.status.value,
-                                    value=plain(
-                                        prepared.semantic_execution_identity.value
-                                    ),
-                                    reason_code=prepared.semantic_execution_identity.reason_code,
-                                ),
+                                prepared=prepared.to_dict(),
+                                resolved_inputs=resolved_entries,
                                 started_at=self.clock(),
                             )
                             self.store.write(
@@ -559,6 +747,8 @@ class Runtime:
                                 execution=execution,
                                 inputs=inputs,
                                 refs=refs,
+                                original_refs=original_refs,
+                                shared=allowed_shared,
                                 binding=bound,
                                 registration=registration,
                             )
@@ -583,6 +773,9 @@ class Runtime:
                             )
                             made_progress = True
                         except Exception:
+                            decisions.setdefault(name, []).append(
+                                "PREFLIGHT_VALIDATION_FAILED"
+                            )
                             resolution(name, TaskState.FAILED, error="PREFLIGHT_FAILED")
                             made_progress = True
                     if active:
@@ -607,6 +800,8 @@ class Runtime:
                                     data["binding"],
                                     produced,
                                     external,
+                                    prefix,
+                                    external_evidence,
                                 )
                                 outputs, native = finalize(
                                     self.store,
@@ -618,8 +813,9 @@ class Runtime:
                                     data["recipe"],
                                     data["execution"],
                                     implementations[name],
-                                    data["refs"],
+                                    data["original_refs"],
                                     data["context"],
+                                    data["shared"],
                                 )
                                 self.fault("before_receipt")
                                 receipt_location = attempt + "/result.json"

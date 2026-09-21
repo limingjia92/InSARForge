@@ -14,10 +14,10 @@ from insarforge.contracts.errors import WorkspaceError
 
 _FIELDS = {
     "run": "run_id scope_id resume_of plan_digest engine_identity implementations source_kind config_refs code_provenance",
-    "started": "run_id scope_id task_id attempt_id sequence plan_digest fingerprint execution inputs allocation prepared started_at",
+    "started": "run_id scope_id task_id attempt_id sequence plan_digest fingerprint execution inputs allocation prepared started_at resolved_inputs",
     "finished": "attempt_id outcome error_code retryable ended_at receipt evidence",
     "receipt": "attempt_id task_id scope_id fingerprint execution inputs outputs cache_policy",
-    "resolution": "task_id state disposition receipt error_code blocked_by",
+    "resolution": "task_id state disposition receipt error_code blocked_by fingerprint execution cache_reasons",
     "summary": "run_id status states completion_order",
     "recovery": "source_run status attempts",
     "index": "receipt receipt_digest",
@@ -132,6 +132,7 @@ def _validate_payload(kind, p):
                 "EXECUTION_FAILED",
                 "CONTRACT_INVALID",
                 "OUTPUT_INVALID",
+                "INTERRUPTED",
             )
         )
     elif kind == "summary":
@@ -203,16 +204,48 @@ def _validate_payload(kind, p):
         if ports != sorted(set(ports)):
             raise WorkspaceError("RECORD_INPUT_PORTS")
     if kind == "started":
-        fields(p["prepared"], "status value reason_code")
-        from insarforge.contracts.values import freeze_json
-        from insarforge.products.semantics import SemanticStatus, SemanticValue
-
-        SemanticValue(
-            SemanticStatus(p["prepared"]["status"]),
-            freeze_json(p["prepared"]["value"]),
-            p["prepared"]["reason_code"],
-            (),
+        from insarforge.contracts.execution import _artifact_from_dict
+        from insarforge.provenance.runtime_evidence import (
+            ArtifactEvidence,
+            PreparationEvidence,
         )
+
+        PreparationEvidence.from_dict(p["prepared"])
+        if type(p["resolved_inputs"]) is not dict:
+            raise WorkspaceError("RECORD_RESOLVED_INPUTS")
+        for port, values in p["resolved_inputs"].items():
+            if not text(port) or type(values) is not list:
+                raise WorkspaceError("RECORD_RESOLVED_INPUTS")
+            for item in values:
+                fields(item, "artifact manifest_location effective_digest evidence")
+                ref = _artifact_from_dict(item["artifact"])
+                if not text(item["manifest_location"]) or (
+                    item["effective_digest"] is not None
+                    and not digest(item["effective_digest"])
+                ):
+                    raise WorkspaceError("RECORD_RESOLVED_INPUTS")
+                if item["evidence"] is not None:
+                    if ArtifactEvidence.from_dict(item["evidence"]).artifact != ref:
+                        raise WorkspaceError("RECORD_INPUT_BINDING")
+        effective = [
+            {
+                "port": port,
+                "semantic_digests": [item["effective_digest"] for item in values],
+            }
+            for port, values in sorted(p["resolved_inputs"].items())
+        ]
+        if any(d is None for row in effective for d in row["semantic_digests"]):
+            effective = None
+        if effective != p["inputs"]:
+            raise WorkspaceError("RECORD_EFFECTIVE_INPUT_BINDING")
+    if kind == "resolution":
+        if not all(
+            p[k] is None or digest(p[k]) for k in ("fingerprint", "execution")
+        ) or (
+            type(p["cache_reasons"]) is not list
+            or not all(text(v) for v in p["cache_reasons"])
+        ):
+            raise WorkspaceError("RECORD_RESOLUTION_EVIDENCE")
     if kind == "finished":
         if (
             (p["outcome"] == "succeeded") != (p["receipt"] is not None)
@@ -243,7 +276,7 @@ def record_bytes(kind, payload):
     try:
         fields(payload, _FIELDS[kind])
         _validate_payload(kind, payload)
-        return canonical({"schema_version": 1, "kind": kind, "payload": payload})
+        return canonical({"schema_version": 2, "kind": kind, "payload": payload})
     except Exception:
         raise WorkspaceError("RECORD_INVALID") from None
 
@@ -253,13 +286,15 @@ def parse_record(raw, kind):
         data = fields(decode(raw), "schema_version kind payload")
         if (
             type(data["schema_version"]) is not int
-            or data["schema_version"] != 1
+            or data["schema_version"] != 2
             or data["kind"] != kind
         ):
-            raise ValueError()
+            raise WorkspaceError("RUNTIME_RECORD_VERSION_UNSUPPORTED")
         payload = fields(data["payload"], _FIELDS[kind])
         record_bytes(kind, payload)
         return payload
+    except WorkspaceError:
+        raise
     except Exception:
         raise WorkspaceError("RECORD_INVALID") from None
 
