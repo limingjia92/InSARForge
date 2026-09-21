@@ -116,3 +116,38 @@ shutdown and before writer-lock release, then propagates. Already committed
 receipts survive; unresolved actual attempts consume scope budget. True process
 death is handled by a later append-only recovery. No thread killing is attempted.
 See ADR0016 and the independent-audit regression suite for boundary tests.
+
+
+## Scope attribution and handled terminal exits
+
+Fresh execution scopes have no retry history. Resume first selects attributable
+runs by validated run metadata and matching scope/plan, before reading their
+attempt payloads. All runs in that scope contribute to the attempt sequence,
+including sibling resumes: choosing an older source cannot replenish a budget.
+Attempt paths must agree with run, scope, task and attempt identities. Missing or
+damaged attributed started/finished records fail closed before a new run is
+created. RUNNING transition counts also expose a missing whole attempt directory.
+Run-level metadata used for scope attribution remains strictly validated.
+Unrelated attempt damage is confined to its cache candidate; a later valid
+candidate can still be selected. Bad historical bytes are never deleted.
+
+An orderly whole-run refusal such as RESUME_REPLAN_REQUIRED remains an exception.
+Reliable history/identity prevalidation runs before creating the new run. If an
+orderly exception occurs later, the coordinator stops admission, requests
+cooperative cancellation and awaits its owned workers, then closes the new run as
+FAILED under the writer lock before rethrowing. Existing successful receipts and
+resolutions remain authoritative; uncommitted cancelled attempts are INTERRUPTED,
+and observed worker exceptions keep their normal failed/retryable classification.
+Safe resolution reasons explain refusal without persisting raw exception text or
+inventing cache-hit attempts. KeyboardInterrupt instead closes the run as
+INTERRUPTED and is rethrown. RuntimeCrash and true process loss remain unhandled
+crash boundaries for subsequent recovery. A persistence/validation failure during
+closure propagates; it is never reported as successful closure.
+
+Terminal task projections fold validated attempts by their recorded sequence,
+then preserve validated accepted resolutions, including cache-only successes.
+Random UUID or filesystem enumeration order does not determine chronology.
+Earlier failed attempts remain immutable history and cannot demote later
+committed success. Completion order keeps actual coordinator-observed completion
+events, including repeats and worker completions observed during safe shutdown;
+it is neither sorted nor deduplicated.

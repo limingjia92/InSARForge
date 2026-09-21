@@ -141,7 +141,16 @@ class Runtime:
                     dict(external_evidence or {}),
                 )
             except KeyboardInterrupt:
-                self._close_interrupted()
+                self._close_terminal("INTERRUPTED")
+                raise
+            except Exception as exc:
+                reason = (
+                    "RESUME_REPLAN_REQUIRED"
+                    if isinstance(exc, WorkflowStateError)
+                    and str(exc) == "RESUME_REPLAN_REQUIRED"
+                    else "RUN_CONTROL_EXIT"
+                )
+                self._close_terminal("FAILED", reason)
                 raise
 
     def resume(self, source_run):
@@ -171,28 +180,83 @@ class Runtime:
             try:
                 return self._run(plan, external, original, (), proofs)
             except KeyboardInterrupt:
-                self._close_interrupted()
+                self._close_terminal("INTERRUPTED")
+                raise
+            except Exception as exc:
+                reason = (
+                    "RESUME_REPLAN_REQUIRED"
+                    if isinstance(exc, WorkflowStateError)
+                    and str(exc) == "RESUME_REPLAN_REQUIRED"
+                    else "RUN_CONTROL_EXIT"
+                )
+                self._close_terminal("FAILED", reason)
                 raise
 
-    def _history(self, scope):
+    def _run_history(self, run, plan):
+        """Read attributable attempts, including directories missing started facts."""
+        prefix = "runs/" + run["run_id"]
         histories = {}
-        for location in self.store.inventory("runs/*/attempts/*/*/started.json"):
-            started = self.store.read(location, "started")
-            if started["scope_id"] != scope:
-                continue
-            prefix = location.rsplit("/", 1)[0]
+        for path in self.store.path(prefix + "/attempts").glob("*/*"):
+            parent = path.relative_to(self.store.area).as_posix()
+            self.store.path(parent)  # Reject directory links before reading facts.
+            started = self.store.read(parent + "/started.json", "started")
+            if (
+                started["run_id"] != run["run_id"]
+                or started["scope_id"] != run["scope_id"]
+                or started["plan_digest"] != plan.digest
+                or started["task_id"] not in {t.task_id for t in plan.tasks}
+                or parent
+                != prefix
+                + "/attempts/"
+                + key(started["task_id"])
+                + "/"
+                + started["attempt_id"]
+            ):
+                raise WorkflowStateError("ATTEMPT_HISTORY_BINDING")
             finished = None
-            if self.store.path(prefix + "/finished.json").exists():
-                finished = self.store.read(prefix + "/finished.json", "finished")
-                if (
-                    finished["attempt_id"] != started["attempt_id"]
-                    or finished["outcome"] not in ("succeeded", "failed", "interrupted")
-                    or type(finished["retryable"]) is not bool
+            if self.store.path(parent + "/finished.json").exists():
+                finished = self.store.read(parent + "/finished.json", "finished")
+                if finished["attempt_id"] != started["attempt_id"] or (
+                    finished["outcome"] == "succeeded"
+                    and finished["receipt"] != parent + "/result.json"
                 ):
                     raise WorkflowStateError("ATTEMPT_HISTORY_INVALID")
             histories.setdefault(started["task_id"], []).append(
-                (prefix, started, finished)
+                (parent, started, finished)
             )
+        # RUNNING transitions witness admitted attempts even if their whole
+        # directory was lost; missing history must not replenish a retry budget.
+        admissions = {}
+        for location in self.store.inventory(prefix + "/transitions/*.json"):
+            fact = self.store.read(location, "transition")
+            if fact["task_id"] not in {t.task_id for t in plan.tasks}:
+                raise WorkflowStateError("ATTEMPT_HISTORY_BINDING")
+            if fact["state"] == "running":
+                admissions[fact["task_id"]] = admissions.get(fact["task_id"], 0) + 1
+        if any(
+            count > len(histories.get(name, [])) for name, count in admissions.items()
+        ):
+            raise WorkflowStateError("ATTEMPT_HISTORY_MISSING")
+        return histories
+
+    def _history(self, source, plan):
+        # Fresh scopes have no retry history. For resume, run-level associations
+        # select the scope BEFORE any attempt payload is parsed. Include sibling
+        # resumes too: returning to an older source cannot replenish the budget.
+        histories = {}
+        if source is None:
+            return histories
+        for location in self.store.inventory("runs/*/run.json"):
+            run = self.store.read(location, "run")
+            if run["scope_id"] != source["scope_id"]:
+                continue
+            if (
+                location != "runs/" + run["run_id"] + "/run.json"
+                or run["plan_digest"] != plan.digest
+            ):
+                raise WorkflowStateError("SCOPE_HISTORY_BINDING")
+            for name, members in self._run_history(run, plan).items():
+                histories.setdefault(name, []).extend(members)
         for members in histories.values():
             members.sort(key=lambda x: x[1]["sequence"])
             if [m[1]["sequence"] for m in members] != list(range(1, len(members) + 1)):
@@ -234,56 +298,129 @@ class Runtime:
             dict(source_run=source["run_id"], status="INTERRUPTED", attempts=attempts),
         )
 
-    def _close_interrupted(self):
-        # Called only after the pool has awaited cooperative worker shutdown,
-        # and while the sole writer lock is still held.
+    def _close_terminal(self, status, reason="INTERRUPTED"):
+        # The pool has already cancelled admission and awaited owned workers.
+        # Keep the writer through receipt reconciliation and terminal publication.
         if self._current_run is None:
             return
         run_id, plan = self._current_run
         prefix = "runs/" + run_id
+        run = self.store.read(prefix + "/run.json", "run")
         states = {t.task_id: "failed" for t in plan.tasks}
-        for location in self.store.inventory(prefix + "/resolutions/*.json"):
-            fact = self.store.read(location, "resolution")
-            states[fact["task_id"]] = fact["state"]
-        for location in self.store.inventory(prefix + "/attempts/*/*/started.json"):
-            parent = location.rsplit("/", 1)[0]
-            start = self.store.read(location, "started")
-            if self.store.path(parent + "/finished.json").exists():
-                finished = self.store.read(parent + "/finished.json", "finished")
-                states[start["task_id"]] = (
+        pending_errors = {}
+        committed = {}
+        if self._pending_completions is not None:
+            while True:
+                try:
+                    name, _, error = self._pending_completions.get_nowait()
+                except queue.Empty:
+                    break
+                self._completion_order.append(name)
+                pending_errors[name] = error
+        histories = self._run_history(run, plan)
+        for name, members in histories.items():
+            members.sort(key=lambda item: item[1]["sequence"])
+            if len({s["sequence"] for _, s, _ in members}) != len(members):
+                raise WorkflowStateError("ATTEMPT_SEQUENCE_INVALID")
+            for parent, start, finished in members:
+                receipt = None
+                if self.store.path(parent + "/result.json").exists():
+                    try:
+                        candidate_from_receipt(
+                            self.store, parent + "/result.json", commit_only=True
+                        )
+                        receipt = parent + "/result.json"
+                    except Exception:
+                        # Invalid output is not committed success; retain bytes.
+                        pass
+                if finished is None:
+                    error = pending_errors.get(name)
+                    code, retryable = (
+                        _error(error)
+                        if isinstance(error, Exception)
+                        else ("INTERRUPTED", False)
+                    )
+                    finished = dict(
+                        attempt_id=start["attempt_id"],
+                        outcome="succeeded"
+                        if receipt
+                        else (
+                            "failed" if isinstance(error, Exception) else "interrupted"
+                        ),
+                        error_code=None if receipt else code,
+                        retryable=False if receipt else retryable,
+                        ended_at=self.clock(),
+                        receipt=receipt,
+                        evidence=[],
+                    )
+                    self.store.write(parent + "/finished.json", "finished", finished)
+                if finished["outcome"] == "succeeded" and receipt is None:
+                    raise WorkflowStateError("TERMINAL_RECEIPT_INVALID")
+                states[name] = (
                     "succeeded" if finished["outcome"] == "succeeded" else "failed"
                 )
-                continue
-            receipt = None
-            if self.store.path(parent + "/result.json").exists():
-                try:
-                    candidate_from_receipt(
-                        self.store, parent + "/result.json", commit_only=True
+                committed[name] = receipt if states[name] == "succeeded" else None
+        # Resolutions also own cache-only successes, with no fabricated attempt.
+        for location in self.store.inventory(prefix + "/resolutions/*.json"):
+            fact = self.store.read(location, "resolution")
+            name = fact["task_id"]
+            if (
+                name not in states
+                or location != prefix + "/resolutions/" + key(name) + ".json"
+            ):
+                raise WorkflowStateError("TERMINAL_RESOLUTION_BINDING")
+            if fact["state"] == "succeeded":
+                receipt = candidate_from_receipt(
+                    self.store, fact["receipt"], commit_only=True
+                )
+                if (
+                    (receipt["fingerprint"], receipt["execution"])
+                    != (fact["fingerprint"], fact["execution"])
+                    or fact["disposition"] not in ("executed", "cache_reused")
+                    or (
+                        fact["disposition"] == "executed"
+                        and (
+                            not fact["receipt"].startswith(
+                                prefix + "/attempts/" + key(name) + "/"
+                            )
+                            or receipt["task_id"] != name
+                        )
                     )
-                    receipt = parent + "/result.json"
-                except Exception:
-                    pass
+                ):
+                    raise WorkflowStateError("TERMINAL_RESOLUTION_BINDING")
+            states[name] = fact["state"]
+        for name, state in states.items():
+            location = prefix + "/resolutions/" + key(name) + ".json"
+            if self.store.path(location).exists():
+                continue
+            receipt = committed.get(name)
+            fact = self.store.read(receipt, "receipt") if receipt else None
             self.store.write(
-                parent + "/finished.json",
-                "finished",
+                location,
+                "resolution",
                 dict(
-                    attempt_id=start["attempt_id"],
-                    outcome="succeeded" if receipt else "interrupted",
-                    error_code=None if receipt else "INTERRUPTED",
-                    retryable=False,
-                    ended_at=self.clock(),
+                    task_id=name,
+                    state=state,
+                    disposition="executed" if receipt else None,
                     receipt=receipt,
-                    evidence=[],
+                    error_code=None
+                    if receipt
+                    else (
+                        "INTERRUPTED" if status == "INTERRUPTED" else "PREFLIGHT_FAILED"
+                    ),
+                    blocked_by=[],
+                    fingerprint=fact["fingerprint"] if fact else None,
+                    execution=fact["execution"] if fact else None,
+                    cache_reasons=[] if receipt else [reason],
                 ),
             )
-            states[start["task_id"]] = "succeeded" if receipt else "failed"
         if not self.store.path(prefix + "/summary.json").exists():
             self.store.write(
                 prefix + "/summary.json",
                 "summary",
                 dict(
                     run_id=run_id,
-                    status="INTERRUPTED",
+                    status=status,
                     states=states,
                     completion_order=list(self._completion_order),
                 ),
@@ -403,6 +540,8 @@ class Runtime:
                 or any(not i.reusable for i in implementations.values())
             ):
                 raise WorkflowStateError("RESUME_REPLAN_REQUIRED")
+        history = self._history(source, plan)
+        if source:
             self._recover(source)
         adopted = self._adopted(source, plan) if source else {}
         run_id = uuid.uuid4().hex
@@ -442,7 +581,7 @@ class Runtime:
         )
         self._current_run = (run_id, plan)
         self._completion_order = []
-        history = self._history(scope)
+        self._pending_completions = None
         states = {t.task_id: TaskState.PENDING for t in plan.tasks}
         produced = {}
         completion = self._completion_order
@@ -460,6 +599,7 @@ class Runtime:
                     )
         cancelled = threading.Event()
         ended = queue.Queue()
+        self._pending_completions = ended
 
         def transition(name, state):
             nonlocal events
