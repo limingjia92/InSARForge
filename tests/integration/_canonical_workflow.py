@@ -80,7 +80,7 @@ def canonical_plan(harness, *, search_label="synthetic:query"):
     return WorkflowPlan(1, tuple(tasks))
 
 
-def canonical_runtime(harness, workspace):
+def canonical_runtime(harness, workspace, *, budget=BUDGET, **runtime_options):
     implementation = {
         name: Path(__file__).with_name(name)
         for name in ("__init__.py", "_fake_plugins.py", "_fake_operations.py")
@@ -88,10 +88,11 @@ def canonical_runtime(harness, workspace):
     return Runtime(
         harness.registry,
         workspace,
-        budget=BUDGET,
+        budget=budget,
         implementation_files={
             r.ref: dict(implementation) for r in harness.registry.registrations()
         },
+        **runtime_options,
     )
 
 
@@ -108,7 +109,7 @@ class PersistedRun:
     records: dict
 
 
-def reopen_workspace(workspace):
+def reopen_workspace(workspace, *, run_id=None):
     """Read one canonical run using only its workspace path, not a live result.
 
     All records use existing strict readers. This test reader deliberately does
@@ -116,8 +117,12 @@ def reopen_workspace(workspace):
     """
     store = Workspace(workspace)
     runs = store.inventory("runs/*/run.json")
-    assert len(runs) == 1
-    location = runs[0]
+    if run_id is None:
+        assert len(runs) == 1
+        location = runs[0]
+    else:
+        location = "runs/" + run_id + "/run.json"
+        assert location in runs
     prefix = location.rsplit("/", 1)[0]
     run = store.read(location, "run")
     assert prefix == "runs/" + run["run_id"]
